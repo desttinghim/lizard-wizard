@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
         .win32_manifest = b.path("gamedisk.manifest"),
     });
 
+    exe.addWin32ResourceFile(.{ .file = b.path("gamedisk.rc") });
+
     exe.root_module.addImport("zigwin32", zigwin32.module("zigwin32"));
 
     b.installArtifact(exe);

@@ -38,6 +38,7 @@ const Global = struct {
     var logo_bitmap: ?*anyopaque = null;
     var gui_font: ?*w32.HFONT = null;
     var gui_font_bold: ?*w32.HFONT = null;
+    var direct2d_factory: ?*direct2d.ID2D1Factory = null;
 };
 
 const ResourceID = enum(c_int) {
@@ -99,17 +100,83 @@ pub fn windowProc(handle: w32.foundation.HWND, msg: u32, wparam: w32.foundation.
             return 0;
         },
         w32.ui.windows_and_messaging.WM_PAINT => {
-            var paint = w32.graphics.gdi.PAINTSTRUCT{
-                .rcPaint = w32.foundation.RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
-                .fErase = TRUE,
-                .hdc = null,
-                .fRestore = FALSE,
-                .fIncUpdate = FALSE,
-                .rgbReserved = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-            };
-            const hdc = w32.graphics.gdi.BeginPaint(handle, &paint);
-            _ = w32.graphics.gdi.FillRect(hdc, &paint.rcPaint, w32.graphics.gdi.GetStockObject(w32.graphics.gdi.WHITE_BRUSH));
-            _ = w32.graphics.gdi.EndPaint(handle, &paint);
+            // Using gdi
+            // var paint = w32.graphics.gdi.PAINTSTRUCT{
+            //     .rcPaint = w32.foundation.RECT{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
+            //     .fErase = TRUE,
+            //     .hdc = null,
+            //     .fRestore = FALSE,
+            //     .fIncUpdate = FALSE,
+            //     .rgbReserved = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            // };
+            // const hdc = w32.graphics.gdi.BeginPaint(handle, &paint);
+            // _ = w32.graphics.gdi.FillRect(hdc, &paint.rcPaint, w32.graphics.gdi.GetStockObject(w32.graphics.gdi.WHITE_BRUSH));
+            // _ = w32.graphics.gdi.EndPaint(handle, &paint);
+            var window_rect: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+            _ = w32.ui.windows_and_messaging.GetClientRect(handle, &window_rect);
+
+            // Using direct2d
+            // const hello_world = w32.zig.L("Hello, World!");
+
+            const width = window_rect.right - window_rect.left;
+            const height = window_rect.bottom - window_rect.top;
+
+            var render_target_opt: ?*direct2d.ID2D1HwndRenderTarget = null;
+
+            _ = Global.direct2d_factory.?.ID2D1Factory_CreateHwndRenderTarget(
+                &DefaultRenderTargetProperties,
+                &.{
+                    .hwnd = handle,
+                    .pixelSize = direct2d.common.D2D_SIZE_U{ .width = @intCast(width), .height = @intCast(height) },
+                    .presentOptions = direct2d.D2D1_PRESENT_OPTIONS_NONE,
+                },
+                &render_target_opt,
+            );
+
+            const render_target = render_target_opt.?;
+
+            {
+                render_target.ID2D1RenderTarget_BeginDraw();
+                defer _ = render_target.ID2D1RenderTarget_EndDraw(null, null);
+
+                const identity = direct2d.common.D2D_MATRIX_3X2_F{
+                    .Anonymous = .{
+                        .m = .{
+                            // zig fmt: off
+                            1, 0,
+                            0, 1,
+                            0, 0,
+                            // zig fmt: on 
+                        }
+                    }
+                };
+                _ = render_target.ID2D1RenderTarget_SetTransform(&identity);
+
+                const white = direct2d.common.D2D1_COLOR_F{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+                _ = render_target.ID2D1RenderTarget_Clear(&white);
+
+                const black = direct2d.common.D2D1_COLOR_F{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+                var black_brush: ?*direct2d.ID2D1SolidColorBrush = null;
+                _ = render_target.ID2D1RenderTarget_CreateSolidColorBrush(&black, null, &black_brush);
+
+                _ = render_target.ID2D1RenderTarget_DrawRectangle(
+                    &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
+                    @ptrCast(black_brush),
+                    1.0,
+                    null,
+                );
+
+                // _ = render_target.ID2D1RenderTarget_DrawText(
+                //     hello_world,
+                //     std.mem.len(hello_world),
+                //     text_format,
+                //     direct2d.common.D2D_RECT_F{ .left = 0, .top = 0, .right = width, .bottom = height },
+                //     black_brush,
+                //     direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
+                //     w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
+                // );
+            }
+
             return 0;
         },
         w32.ui.windows_and_messaging.WM_COMMAND => {
@@ -177,6 +244,14 @@ pub fn main() !u8 {
     };
 
     Global.window_current_dpi = getWindowDPI(hwnd);
+    if (!SUCCEEDED(direct2d.D2D1CreateFactory(
+        direct2d.D2D1_FACTORY_TYPE_SINGLE_THREADED,
+        direct2d.IID_ID2D1Factory,
+        null,
+        @ptrCast(&Global.direct2d_factory),
+    ))) {
+        return 1;
+    }
 
     // Run message loop
     var msg = w32.ui.windows_and_messaging.MSG{
@@ -202,6 +277,13 @@ pub fn main() !u8 {
 
 fn SUCCEEDED(result: w32.foundation.HRESULT) bool {
     return result >= 0;
+}
+
+fn SafeRelease(interface: anytype) void {
+    if (interface.* != null) {
+        interface.*.Release();
+        interface.* = null;
+    }
 }
 
 fn mulDiv(pixels: u32, current_dpi: u32, reference_dpi: u32) u32 {
@@ -368,7 +450,7 @@ fn loadBitmapFromFile(
         if (!SUCCEEDED(result)) return error.FailedToCreateDecoder;
     }
     const decoder = decoder_opt orelse return error.FailedToCreateDecoder;
-    // defer SafeRelease(decoder);
+    defer SafeRelease(decoder);
 
     var source_opt: ?*imaging.IWICBitmapFrameDecode = null;
     {
@@ -376,7 +458,7 @@ fn loadBitmapFromFile(
         if (!SUCCEEDED(result)) return error.FailedToCreateFrameDecoder;
     }
     const source = source_opt orelse return error.FailedToCreateFrameDecoder;
-    // defer SafeRelease(source);
+    defer SafeRelease(source);
 
     var converter_opt: ?*imaging.IWICFormatConverter = null;
     {
@@ -387,7 +469,7 @@ fn loadBitmapFromFile(
         if (!SUCCEEDED(result)) return error.FailedToCreateFormatConverter;
     }
     const converter = converter_opt orelse return error.FailedToCreateFormatConverter;
-    // defer SafeRelease(converter);
+    defer SafeRelease(converter);
 
     {
         const result = converter.IWICFormatConverter_Initialize(
@@ -407,7 +489,7 @@ fn loadBitmapFromFile(
         if (!SUCCEEDED(result)) return error.FailedToCreateScaler;
     }
     const scaler = scaler_opt orelse return error.FailedToCreateScaler;
-    // defer SafeRelease(source);
+    defer SafeRelease(scaler);
 
     {
         const result = scaler.IWICBitmapScaler_Initialize(
@@ -428,6 +510,18 @@ fn loadBitmapFromFile(
 
     return bitmap;
 }
+
+const DefaultRenderTargetProperties = direct2d.D2D1_RENDER_TARGET_PROPERTIES{
+    .type = direct2d.D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    .pixelFormat = .{
+        .format = w32.graphics.dxgi.common.DXGI_FORMAT_UNKNOWN,
+        .alphaMode = direct2d.common.D2D1_ALPHA_MODE_UNKNOWN,
+    },
+    .dpiX = 0,
+    .dpiY = 0,
+    .usage = direct2d.D2D1_RENDER_TARGET_USAGE_NONE,
+    .minLevel = direct2d.D2D1_FEATURE_LEVEL_DEFAULT,
+};
 
 // We have 2 dependencies: the zig standard library and zigwin32.
 // TODO: Copy the necessary functions from zigwin32 into this file. Or remove this comment.
