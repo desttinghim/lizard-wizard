@@ -87,6 +87,8 @@ const App = struct {
     fn register(h_instance: w32.foundation.HINSTANCE) !void {
         const WAM = w32.ui.windows_and_messaging;
 
+        const app_icon = WAM.LoadIconW(h_instance, @ptrFromInt(@intFromEnum(ResourceID.icon)));
+
         const window_class = w32.ui.windows_and_messaging.WNDCLASSW{
             .style = w32.ui.windows_and_messaging.WNDCLASS_STYLES{
                 .HREDRAW = 1,
@@ -95,7 +97,7 @@ const App = struct {
             .lpfnWndProc = windowProc,
             .hInstance = h_instance,
             .hCursor = WAM.LoadCursorW(null, WAM.IDI_APPLICATION),
-            .hIcon = null,
+            .hIcon = app_icon,
             .hbrBackground = null,
             .lpszClassName = class_name,
             .lpszMenuName = null,
