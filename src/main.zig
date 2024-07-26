@@ -78,6 +78,8 @@ const App = struct {
     window_current_dpi: u32 = 0,
     d2d_bitmap_logo: *direct2d.ID2D1Bitmap,
     iwic_factory: *imaging.IWICImagingFactory,
+    dwrite_factory: *w32.graphics.direct_write.IDWriteFactory,
+    text_format: *w32.graphics.direct_write.IDWriteTextFormat,
     // gui_font: ?*w32.HFONT = null,
     // gui_font_bold: ?*w32.HFONT = null,
 
@@ -130,6 +132,35 @@ const App = struct {
             break :factory d2d_factory_opt orelse return error.InitD2DFactory;
         };
 
+        const dwrite_factory = factory: {
+            var dwrite_factory_opt: ?*w32.graphics.direct_write.IDWriteFactory = null;
+            try CHECK(w32.graphics.direct_write.DWriteCreateFactory(
+                w32.graphics.direct_write.DWRITE_FACTORY_TYPE_SHARED,
+                w32.graphics.direct_write.IID_IDWriteFactory,
+                @ptrCast(&dwrite_factory_opt),
+            ));
+            break :factory dwrite_factory_opt orelse return error.InitDWriteFactory;
+        };
+
+        const font_name = w32.zig.L("Verdana");
+        const font_size = 50;
+        const text_format = text_format: {
+            var text_format_opt: ?*w32.graphics.direct_write.IDWriteTextFormat = null;
+            try CHECK(dwrite_factory.IDWriteFactory_CreateTextFormat(
+                font_name,
+                null,
+                w32.graphics.direct_write.DWRITE_FONT_WEIGHT_NORMAL,
+                w32.graphics.direct_write.DWRITE_FONT_STYLE_NORMAL,
+                w32.graphics.direct_write.DWRITE_FONT_STRETCH_NORMAL,
+                font_size,
+                w32.zig.L(""),
+                &text_format_opt,
+            ));
+            break :text_format text_format_opt orelse return error.InitDWriteTextFormat;
+        };
+        _ = text_format.IDWriteTextFormat_SetTextAlignment(w32.graphics.direct_write.DWRITE_TEXT_ALIGNMENT_CENTER);
+        _ = text_format.IDWriteTextFormat_SetParagraphAlignment(w32.graphics.direct_write.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
         try CHECK(w32.system.com.CoInitialize(null));
 
         const iwic_factory = factory: {
@@ -169,7 +200,7 @@ const App = struct {
             return error.CouldNotCreateWindow;
         };
 
-        const dpi: f32 = @floatFromInt(getWindowDPI(hwnd));
+        const dpi: f32 = @floatFromInt(GetWindowDPI(hwnd));
         // const x = 0;
         // const y = 0;
         // const width: i32 = @intFromFloat(Conf.window_min_width * (dpi / 96.0));
@@ -180,6 +211,7 @@ const App = struct {
         //     .NOACTIVATE = TRUE,
         //     .NOMOVE = TRUE,
         // }));
+        _ = centerWindow(hwnd);
         try CHECK_BOOL(w32.ui.windows_and_messaging.ShowWindow(hwnd, .{ .SHOWNORMAL = TRUE }));
         try CHECK_BOOL(w32.graphics.gdi.UpdateWindow(hwnd));
 
@@ -193,7 +225,7 @@ const App = struct {
         const render_target = render_target: {
             var render_target_opt: ?*direct2d.ID2D1HwndRenderTarget = null;
             CHECK(d2d_factory.ID2D1Factory_CreateHwndRenderTarget(
-                &DefaultRenderTargetProperties,
+                &std.mem.zeroes(direct2d.D2D1_RENDER_TARGET_PROPERTIES),
                 &.{
                     .hwnd = hwnd,
                     .pixelSize = direct2d.common.D2D_SIZE_U{
@@ -228,6 +260,8 @@ const App = struct {
             .window_current_dpi = @intFromFloat(dpi),
             .iwic_factory = iwic_factory,
             .d2d_bitmap_logo = bitmap_logo,
+            .text_format = text_format,
+            .dwrite_factory = dwrite_factory,
         };
 
         return self;
@@ -276,7 +310,7 @@ pub fn windowProc(handle: w32.foundation.HWND, msg: u32, wparam: w32.foundation.
             const height = window_rect.bottom - window_rect.top;
 
             CHECK(app.d2d_factory.ID2D1Factory_CreateHwndRenderTarget(
-                &DefaultRenderTargetProperties,
+                &std.mem.zeroes(direct2d.D2D1_RENDER_TARGET_PROPERTIES),
                 &.{
                     .hwnd = handle,
                     .pixelSize = direct2d.common.D2D_SIZE_U{ .width = @intCast(width), .height = @intCast(height) },
@@ -316,6 +350,8 @@ pub fn windowProc(handle: w32.foundation.HWND, msg: u32, wparam: w32.foundation.
             const app = app_opt orelse return 0;
             const render_target = app.d2d_render_target;
 
+            const hello_world = w32.zig.L("Hello, World!");
+
             render_target.ID2D1RenderTarget_BeginDraw();
             defer _ = render_target.ID2D1RenderTarget_EndDraw(null, null);
 
@@ -339,15 +375,15 @@ pub fn windowProc(handle: w32.foundation.HWND, msg: u32, wparam: w32.foundation.
                 null,
             );
 
-            // _ = render_target.ID2D1RenderTarget_DrawText(
-            //     hello_world,
-            //     std.mem.len(hello_world),
-            //     text_format,
-            //     direct2d.common.D2D_RECT_F{ .left = 0, .top = 0, .right = width, .bottom = height },
-            //     black_brush,
-            //     direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
-            //     w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
-            // );
+            _ = render_target.ID2D1RenderTarget_DrawText(
+                hello_world,
+                hello_world.len,
+                app.text_format,
+                &direct2d.common.D2D_RECT_F{ .left = 100, .top = 100, .right = 200, .bottom = 200 },
+                @ptrCast(app.d2d_brush_black),
+                direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
+                w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
+            );
 
             return 0;
         },
@@ -449,7 +485,7 @@ fn mulDiv(pixels: u32, current_dpi: u32, reference_dpi: u32) u32 {
 
 const Func_GetDpiForMonitor = *const fn (w32.graphics.gdi.HMONITOR, c_int, *c_uint, *c_uint) w32.foundation.HRESULT;
 
-fn getWindowDPI(hwnd: w32.foundation.HWND) u32 {
+fn GetWindowDPI(hwnd: w32.foundation.HWND) u32 {
     shcore: {
         // Tries to get the DPI setting for the monitor where the given window is located.
         // This API is Windows 8.1+.
@@ -484,8 +520,8 @@ fn centerWindow(hwnd: w32.foundation.HWND) bool {
     _ = w32.ui.windows_and_messaging.GetWindowRect(hwnd, &rect_window);
     _ = w32.ui.windows_and_messaging.GetWindowRect(parent, &rect_parent);
 
-    const width = rect_window.left - rect_window.right;
-    const height = rect_window.bottom - rect_window.top;
+    const width = rect_window.right - rect_window.left;
+    const height = rect_window.top - rect_window.bottom;
 
     var x = @divTrunc(((rect_parent.right - rect_parent.left) - width), 2) + rect_parent.left;
     var y = @divTrunc(((rect_parent.bottom - rect_parent.top) - height), 2) + rect_parent.top;
