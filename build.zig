@@ -16,7 +16,10 @@ pub fn build(b: *std.Build) void {
 
     exe.addWin32ResourceFile(.{ .file = b.path("gamedisk.rc") });
 
+    exe.root_module.pic = true;
+
     exe.root_module.addImport("zigwin32", zigwin32.module("zigwin32"));
+    exe.root_module.addIncludePath(b.path("."));
 
     b.installArtifact(exe);
 

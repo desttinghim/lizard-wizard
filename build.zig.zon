@@ -24,8 +24,8 @@
     // internet connectivity.
     .dependencies = .{
         .zigwin32 = .{
-            .url = "https://github.com/marlersoft/zigwin32/archive/4a78e716ae6496f52d9ddaf4fda2c4bb692631cd.tar.gz",
-            .hash = "1220da4cab188b7b0e351de67626ca0dcadceddd16ca5997cfb578697f0525a59dac",
+            .url = "https://github.com/marlersoft/zigwin32/archive/407a4c7b869ee3d10db520fdfae8b9faf9b2adb5.tar.gz",
+            .hash = "1220cc9c9028e20f4ec2ece1155ae3479acc1cc509f9ab93acb74e8f5bbf8eefd2a9",
         },
     },
     .paths = .{
