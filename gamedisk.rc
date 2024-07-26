@@ -1,3 +1,5 @@
 #include "windows.h"
 
+#define IDP_LOGO 100
+
 IDP_LOGO PNG "wizard_hat_icon.png"

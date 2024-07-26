@@ -76,7 +76,8 @@ const App = struct {
     // d2d_brush_light_slate_gray: *direct2d.ID2D1SolidColorBrush,
     // d2d_brush_cornflower_blue: *direct2d.ID2D1SolidColorBrush,
     window_current_dpi: u32 = 0,
-    // logo_bitmap: ?*anyopaque = null,
+    d2d_bitmap_logo: *direct2d.ID2D1Bitmap,
+    iwic_factory: *imaging.IWICImagingFactory,
     // gui_font: ?*w32.HFONT = null,
     // gui_font_bold: ?*w32.HFONT = null,
 
@@ -125,6 +126,20 @@ const App = struct {
                 @ptrCast(&d2d_factory_opt),
             )) catch return error.InitD2DFactory;
             break :factory d2d_factory_opt orelse return error.InitD2DFactory;
+        };
+
+        try CHECK(w32.system.com.CoInitialize(null));
+
+        const iwic_factory = factory: {
+            var iwic_factory_opt: ?*imaging.IWICImagingFactory = null;
+            CHECK(w32.system.com.CoCreateInstance(
+                @alignCast(@ptrCast(&imaging.CLSID_WICImagingFactory.Bytes)),
+                null,
+                w32.system.com.CLSCTX_INPROC_SERVER,
+                @alignCast(@ptrCast(&imaging.IID_IWICImagingFactory.Bytes)),
+                @ptrCast(&iwic_factory_opt),
+            )) catch return error.InitIWICFactory;
+            break :factory iwic_factory_opt orelse return error.InitIWICFactory;
         };
 
         const window_title = w32.zig.L("Hello from zig"); // Title
@@ -200,6 +215,8 @@ const App = struct {
             break :black_brush black_brush_opt orelse return error.CreateSolidColorBrush;
         };
 
+        const bitmap_logo = try loadPNGAsGdiplusBitmap(@ptrCast(render_target), iwic_factory, h_instance, @intFromEnum(ResourceID.logo));
+
         self.* = .{
             .hwnd = hwnd,
             .allocator = allocator,
@@ -207,6 +224,8 @@ const App = struct {
             .d2d_render_target = render_target,
             .d2d_brush_black = black_brush,
             .window_current_dpi = @intFromFloat(dpi),
+            .iwic_factory = iwic_factory,
+            .d2d_bitmap_logo = bitmap_logo,
         };
 
         return self;
@@ -306,6 +325,15 @@ pub fn windowProc(handle: w32.foundation.HWND, msg: u32, wparam: w32.foundation.
                 &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
                 @ptrCast(app.d2d_brush_black),
                 1.0,
+                null,
+            );
+
+            _ = render_target.ID2D1RenderTarget_DrawBitmap(
+                app.d2d_bitmap_logo,
+                // &.{ .left = 110, .right = 200, .top = 10, .bottom = 100 },
+                null,
+                1,
+                .LINEAR,
                 null,
             );
 
@@ -477,17 +505,19 @@ fn centerWindow(hwnd: w32.foundation.HWND) bool {
 fn loadPNGAsGdiplusBitmap(
     render_target: *direct2d.ID2D1RenderTarget,
     iwic_factory: *imaging.IWICImagingFactory,
-    instance: w32.HINSTANCE,
+    instance: w32.foundation.HINSTANCE,
     id: c_uint,
-) !*w32.HBITMAP {
+) !*direct2d.ID2D1Bitmap {
     const loader = w32.system.library_loader;
 
     // Find
-    const resource_source = loader.FindResourceW(instance, id, w32.zig.L("PNG")) orelse return error.NotFound;
+    const resource_source = loader.FindResourceW(instance, @ptrFromInt(id), w32.zig.L("PNG")) orelse return error.NotFound;
     // Size
-    const size = loader.SizeofResource(instance, resource_source) orelse return error.ZeroSized;
+    const size = loader.SizeofResource(instance, resource_source);
+    if (size == 0) return error.ZeroSized;
     // Load
-    const resource_loaded = loader.LoadResource(instance, resource_source) orelse return error.CouldNotLoad;
+    const resource_loaded = loader.LoadResource(instance, resource_source);
+    if (resource_loaded == 0) return error.CouldNotLoad;
     // Lock
     const resource = loader.LockResource(resource_loaded) orelse return error.CouldNotLock;
 
@@ -504,7 +534,7 @@ fn loadPNGAsGdiplusBitmap(
     const decoder = decoder: {
         var decoder_opt: ?*imaging.IWICBitmapDecoder = null;
         CHECK(iwic_factory.IWICImagingFactory_CreateDecoderFromStream(
-            stream,
+            @ptrCast(stream),
             null,
             imaging.WICDecodeMetadataCacheOnLoad,
             &decoder_opt,
@@ -515,7 +545,7 @@ fn loadPNGAsGdiplusBitmap(
 
     const source = source: {
         var source_opt: ?*imaging.IWICBitmapSource = null;
-        CHECK(decoder.IWICBitmapDecoder_GetFrame(0, &source_opt)) catch
+        CHECK(decoder.IWICBitmapDecoder_GetFrame(0, @ptrCast(&source_opt))) catch
             return error.CouldNotGetFrame;
         break :source source_opt orelse return error.CouldNotGetFrame;
     };
@@ -530,21 +560,23 @@ fn loadPNGAsGdiplusBitmap(
         break :converter converter_opt orelse return error.CouldNotCreateFormatConverter;
     };
 
+    var pixel_format: w32.zig.Guid = imaging.GUID_WICPixelFormat32bppPBGRA;
+
     // Initialize the converter
     CHECK(converter.IWICFormatConverter_Initialize(
         source,
-        imaging.GUID_WICPixelFormat32bppPBGRA,
-        .WICBitmapDitherTypeNone,
+        &pixel_format,
+        .itmapDitherTypeNone, // TODO: report typo
         null,
         0,
-        .WICBitmapPaletteMedianCut,
+        .itmapPaletteTypeMedianCut,
     )) catch
         return error.CouldNotInitializeConverter;
 
     // Create a D3D bitmap from the WIC bitmap
     const bitmap = bitmap: {
         var bitmap_opt: ?*direct2d.ID2D1Bitmap = null;
-        CHECK(render_target.ID2D1RenderTarget_CreateBitmapFromWicBitmap(converter, null, &bitmap_opt)) catch
+        CHECK(render_target.ID2D1RenderTarget_CreateBitmapFromWicBitmap(@ptrCast(converter), null, &bitmap_opt)) catch
             return error.CouldNotCreateD2DBitmap;
         break :bitmap bitmap_opt orelse return error.CouldNotCreateD2DBitmap;
     };
