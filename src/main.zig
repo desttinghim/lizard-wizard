@@ -82,12 +82,14 @@ const App = struct {
     d2d_brush_black: *direct2d.ID2D1SolidColorBrush,
     window_current_dpi: i32 = 0,
     d2d_bitmap_logo: *direct2d.ID2D1Bitmap,
-    // text_format: *w32.graphics.direct_write.IDWriteTextFormat,
 
-    font_attr_gui: w32.graphics.gdi.LOGFONTW,
-    font_attr_gui_bold: w32.graphics.gdi.LOGFONTW,
-    font_gui: *w32.graphics.direct_write.IDWriteFont,
-    font_gui_bold: *w32.graphics.direct_write.IDWriteFont,
+    text_format_gui: *w32.graphics.direct_write.IDWriteTextFormat,
+    text_format_gui_bold: *w32.graphics.direct_write.IDWriteTextFormat,
+
+    // font_attr_gui: w32.graphics.gdi.LOGFONTW,
+    // font_attr_gui_bold: w32.graphics.gdi.LOGFONTW,
+    // font_gui: *w32.graphics.direct_write.IDWriteFont,
+    // font_gui_bold: *w32.graphics.direct_write.IDWriteFont,
 
     const class_name = w32.zig.L("GameDisk");
     const window_title = w32.zig.L("Hello from zig"); // Title
@@ -319,24 +321,10 @@ const App = struct {
         const bitmap_logo = try loadPNGAsD2DBitmap(@ptrCast(render_target), iwic_factory, h_instance, @intFromEnum(ResourceID.logo));
         std.log.info("bitmap_logo {}", .{bitmap_logo});
 
-        // Load up the font we'll need for the GUI
-
+        // Query what the default font is and load it into memory
         var ncm = std.mem.zeroes(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
         ncm.cbSize = @sizeOf(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
         _ = w32.ui.windows_and_messaging.SystemParametersInfoW(w32.ui.windows_and_messaging.SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, .{});
-
-        // const hdc = w32.graphics.gdi.GetDC(app.hwnd);
-        // var log_font = std.mem.zeroes(w32.graphics.gdi.LOGFONTW);
-        // // log_font.lfCharSet = w32.graphics.gdi.DEFAULT_CHARSET;
-        // _ = w32.graphics.gdi.EnumFontFamiliesExW(hdc, &log_font, &_FontEnumProc, 0, 0);
-
-        // We'll store the LOGFONTW struct in case we need to recreate the font
-        // var font_attr_gui = std.mem.zeroInit(w32.graphics.gdi.LOGFONTW, .{
-        //     .lfHeight = -mulDiv(10, dpi, Conf.reference_dpi),
-        //     .lfCharSet = w32.graphics.gdi.ANSI_CHARSET,
-        // });
-        // const face_name = w32.zig.L("MS Shell Dlg 2");
-        // @memcpy(font_attr_gui.lfFaceName[0..face_name.len], face_name);
 
         var font_attr_gui = ncm.lfMessageFont;
 
@@ -354,13 +342,41 @@ const App = struct {
         };
         std.log.info("font_gui {}", .{font_gui});
 
-        const font_gui_bold = font_gui: {
-            var option: ?*w32.graphics.direct_write.IDWriteFont = null;
-            CHECK(dwrite_gdi_interop.CreateFontFromLOGFONT(&font_attr_gui_bold, &option)) catch
-                return error.InitDWriteFontGuiBold;
-            break :font_gui option orelse return error.InitDWriteFontGuiBold;
-        };
-        std.log.info("font_gui_bold {}", .{font_gui_bold});
+        // const font_gui_bold = font_gui: {
+        //     var option: ?*w32.graphics.direct_write.IDWriteFont = null;
+        //     CHECK(dwrite_gdi_interop.CreateFontFromLOGFONT(&font_attr_gui_bold, &option)) catch
+        //         return error.InitDWriteFontGuiBold;
+        //     break :font_gui option orelse return error.InitDWriteFontGuiBold;
+        // };
+        // std.log.info("font_gui_bold {}", .{font_gui_bold});
+
+        // Get the system font's family
+        var family: ?*w32.graphics.direct_write.IDWriteFontFamily = null;
+        _ = font_gui.GetFontFamily(&family);
+
+        var font_family_name: ?*w32.graphics.direct_write.IDWriteLocalizedStrings = null;
+        _ = family.?.GetFamilyNames(&font_family_name);
+
+        var index: u32 = 0;
+        var length: u32 = 0;
+        var exists: w32.foundation.BOOL = FALSE;
+
+        _ = font_family_name.?.FindLocaleName(w32.zig.L("en-US"), &index, &exists);
+        _ = font_family_name.?.GetStringLength(index, &length);
+
+        var name_buf: [100]u16 = undefined;
+        _ = font_family_name.?.GetString(index, @ptrCast(&name_buf), length + 1);
+        const name = name_buf[0..length :0];
+
+        const font_weight = w32.graphics.direct_write.DWRITE_FONT_WEIGHT_NORMAL;
+        const font_style = w32.graphics.direct_write.DWRITE_FONT_STYLE_NORMAL;
+        const font_stretch = w32.graphics.direct_write.DWRITE_FONT_STRETCH_NORMAL;
+
+        var text_format: ?*w32.graphics.direct_write.IDWriteTextFormat = null;
+        _ = dwrite_factory.CreateTextFormat(name, null, font_weight, font_style, font_stretch, 12.0, w32.zig.L("en-us"), &text_format);
+
+        var text_format_bold: ?*w32.graphics.direct_write.IDWriteTextFormat = null;
+        _ = dwrite_factory.CreateTextFormat(name, null, w32.graphics.direct_write.DWRITE_FONT_WEIGHT_BOLD, font_style, font_stretch, 12.0, w32.zig.L("en-us"), &text_format_bold);
 
         // const empty_str = w32.zig.L("");
         // const WC_STATIC = w32.ui.controls.WC_STATICW;
@@ -388,10 +404,12 @@ const App = struct {
             .d2d_bitmap_logo = bitmap_logo,
 
             .d2d_brush_black = black_brush,
-            .font_attr_gui = font_attr_gui,
-            .font_attr_gui_bold = font_attr_gui_bold,
-            .font_gui = font_gui,
-            .font_gui_bold = font_gui_bold,
+            // .font_attr_gui = font_attr_gui,
+            // .font_attr_gui_bold = font_attr_gui_bold,
+            // .font_gui = font_gui,
+            // .font_gui_bold = font_gui_bold,
+            .text_format_gui = text_format.?,
+            .text_format_gui_bold = text_format_bold.?,
         };
 
         // Create all pages
@@ -463,43 +481,41 @@ const App = struct {
 
     fn OnPaint(app: *App) !void {
         std.log.info("WM_PAINT", .{});
-        // const hello_world = w32.zig.L("Hello, World!");
+        const hello_world = w32.zig.L("Hello, World!");
 
-        {
-            const render_target = app.d2d_render_target;
+        const render_target = app.d2d_render_target;
 
-            render_target.ID2D1RenderTarget.BeginDraw();
-            defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
+        render_target.ID2D1RenderTarget.BeginDraw();
+        defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
 
-            _ = render_target.ID2D1RenderTarget.SetTransform(&identity);
+        _ = render_target.ID2D1RenderTarget.SetTransform(&identity);
 
-            _ = render_target.ID2D1RenderTarget.Clear(&white);
+        _ = render_target.ID2D1RenderTarget.Clear(&white);
 
-            _ = render_target.ID2D1RenderTarget.DrawRectangle(
-                &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
-                @ptrCast(app.d2d_brush_black),
-                1.0,
-                null,
-            );
+        _ = render_target.ID2D1RenderTarget.DrawRectangle(
+            &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
+            @ptrCast(app.d2d_brush_black),
+            1.0,
+            null,
+        );
 
-            _ = render_target.ID2D1RenderTarget.DrawBitmap(
-                app.d2d_bitmap_logo,
-                &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
-                1,
-                .LINEAR,
-                null,
-            );
+        _ = render_target.ID2D1RenderTarget.DrawBitmap(
+            app.d2d_bitmap_logo,
+            &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
+            1,
+            .LINEAR,
+            null,
+        );
 
-            // _ = render_target.ID2D1RenderTarget.DrawText(
-            //     hello_world,
-            //     hello_world.len,
-            //     app.text_format,
-            //     &direct2d.common.D2D_RECT_F{ .left = 10, .top = 10, .right = 200, .bottom = 200 },
-            //     @ptrCast(app.d2d_brush_black),
-            //     direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
-            //     w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
-            // );
-        }
+        _ = render_target.ID2D1RenderTarget.DrawText(
+            hello_world,
+            hello_world.len,
+            app.text_format_gui,
+            &direct2d.common.D2D_RECT_F{ .left = 10, .top = 10, .right = 200, .bottom = 200 },
+            @ptrCast(app.d2d_brush_black),
+            direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
+            w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
+        );
     }
 
     fn OnSize(app: *App) !void {
