@@ -36,14 +36,6 @@ const Conf = struct {
 const TRUE: w32.foundation.BOOL = 1;
 const FALSE: w32.foundation.BOOL = 0;
 
-const identity = direct2d.common.D2D_MATRIX_3X2_F{ .Anonymous = .{ .m = .{
-    1, 0,
-    0, 1,
-    0, 0,
-} } };
-const white = direct2d.common.D2D_COLOR_F{ .r = 1, .g = 1, .b = 1, .a = 1 };
-const black = direct2d.common.D2D_COLOR_F{ .r = 0, .g = 0, .b = 0, .a = 1 };
-
 const RES = @cImport({
     @cInclude("resource.h");
 });
@@ -67,6 +59,8 @@ pub fn main() !u8 {
     icc.dwSize = @sizeOf(w32.ui.controls.INITCOMMONCONTROLSEX);
     icc.dwICC = .{ .STANDARD_CLASSES = TRUE, .LISTVIEW_CLASSES = TRUE };
     try CHECK_BOOL(w32.ui.controls.InitCommonControlsEx(&icc));
+
+    try CHECK(w32.system.com.CoInitialize(null));
 
     const app = try App.create(h_instance, gpa.allocator());
     defer app.destroy(gpa.allocator());
@@ -97,6 +91,8 @@ const App = struct {
     str_back: [*:0]const u16,
     str_next: [*:0]const u16,
     str_cancel: [*:0]const u16,
+
+    bmp_logo: *gdip.Bitmap,
 
     const class_name = w32.zig.L("GameDisk");
     const window_title = w32.zig.L("Hello from zig"); // Title
@@ -234,8 +230,8 @@ const App = struct {
         const dpi = GetWindowDPI(hwnd);
 
         // // Load resources
-        // const bitmap_logo = try loadPNGAsD2DBitmap(@ptrCast(render_target), iwic_factory, h_instance, RES.IDP_LOGO);
-        // std.log.info("bitmap_logo {}", .{bitmap_logo});
+        const bitmap_logo = try loadPNGAsGdiplusBitmap(allocator, h_instance, RES.IDP_LOGO);
+        std.log.info("bitmap_logo {}", .{bitmap_logo});
 
         // Query what the default system font is
         var ncm = std.mem.zeroes(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
@@ -335,6 +331,8 @@ const App = struct {
             .str_back = str_back,
             .str_next = str_next,
             .str_cancel = str_cancel,
+
+            .bmp_logo = bitmap_logo,
         };
 
         // Create all pages
@@ -392,8 +390,6 @@ const App = struct {
         const height = window_rect_new.bottom - y;
 
         try CHECK_BOOL(w32.ui.windows_and_messaging.SetWindowPos(app.hwnd, null, x, y, width, height, .{ .NOZORDER = 1, .NOACTIVATE = 1 }));
-
-        _ = centerWindow(app.hwnd);
     }
 
     fn OnGetMinMaxInfo(app: *App, lparam: LPARAM) !void {
@@ -450,6 +446,14 @@ const App = struct {
             _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_subheader.ptr), @intCast(app.str_subheader.len), &rect_subheader_text, .{});
 
             // TODO: Draw logo into upper right corner
+            const logo_padding = mulDiv(5, app.window_current_dpi, Conf.reference_dpi);
+            const dest_bitmap_height = rect_header.bottom - 2 * logo_padding;
+            const dest_bitmap_width = @divFloor(@as(i32, @intCast(app.bmp_logo.GetWidth())) * dest_bitmap_height, @as(i32, @intCast(app.bmp_logo.GetHeight())));
+            const dest_bitmap_x = rect_window.right - logo_padding - dest_bitmap_width;
+            const dest_bitmap_y = logo_padding;
+
+            const graphics = gdip.GpGraphics.CreateFromHDC(dc_mem);
+            graphics.?.DrawImageRectI(@ptrCast(app.bmp_logo), dest_bitmap_x, dest_bitmap_y, dest_bitmap_width, dest_bitmap_height);
 
             // Fill the rest of the window with the window background color.
             var rect_background = rect_window;
@@ -686,45 +690,12 @@ fn GetWindowDPI(hwnd: w32.foundation.HWND) i32 {
     return dpi_x;
 }
 
-/// Centers window relative to the window's parent and ensures that the window is on screen.
-/// If the parent is null, returns false.
-fn centerWindow(hwnd: w32.foundation.HWND) bool {
-    const parent = w32.ui.windows_and_messaging.GetParent(hwnd) orelse return false;
-
-    var rect_window, var rect_parent = .{
-        std.mem.zeroes(w32.foundation.RECT),
-        std.mem.zeroes(w32.foundation.RECT),
-    };
-
-    _ = w32.ui.windows_and_messaging.GetWindowRect(hwnd, &rect_window);
-    _ = w32.ui.windows_and_messaging.GetWindowRect(parent, &rect_parent);
-
-    const width = rect_window.right - rect_window.left;
-    const height = rect_window.top - rect_window.bottom;
-
-    var x = @divTrunc(((rect_parent.right - rect_parent.left) - width), 2) + rect_parent.left;
-    var y = @divTrunc(((rect_parent.bottom - rect_parent.top) - height), 2) + rect_parent.top;
-
-    const screen_width = w32.ui.windows_and_messaging.GetSystemMetrics(w32.ui.windows_and_messaging.SM_CXSCREEN);
-    const screen_height = w32.ui.windows_and_messaging.GetSystemMetrics(w32.ui.windows_and_messaging.SM_CYSCREEN);
-
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x + width > screen_width) x = screen_width - width;
-    if (y + height > screen_height) y = screen_height - height;
-
-    _ = w32.ui.windows_and_messaging.MoveWindow(hwnd, x, y, width, height, FALSE);
-
-    return true;
-}
-
-/// Uses GDI+ to load a PNG resource as a bitmap.
-fn loadPNGAsD2DBitmap(
-    render_target: *direct2d.ID2D1RenderTarget,
-    iwic_factory: *imaging.IWICImagingFactory,
+/// Uses the GDI+ Flat API to load a PNG resource as a bitmap.
+fn loadPNGAsGdiplusBitmap(
+    alloc: std.mem.Allocator,
     instance: w32.foundation.HINSTANCE,
     id: c_uint,
-) !*direct2d.ID2D1Bitmap {
+) !*gdip.Bitmap {
     const loader = w32.system.library_loader;
 
     // Find
@@ -739,69 +710,23 @@ fn loadPNGAsD2DBitmap(
     const resource = loader.LockResource(resource_loaded) orelse return error.CouldNotLock;
     defer _ = loader.FreeResource(resource_loaded);
 
-    const stream = stream: {
-        var stream_opt: ?*imaging.IWICStream = null;
-        CHECK(iwic_factory.CreateStream(&stream_opt)) catch
-            return error.CouldNotCreateStream;
-        break :stream stream_opt orelse return error.CouldNotCreateStream;
-    };
+    const h_buffer = w32.system.memory.GlobalAlloc(.{ .MEM_MOVEABLE = TRUE }, @intCast(size));
+    defer _ = w32.system.memory.GlobalFree(h_buffer);
 
-    CHECK(stream.InitializeFromMemory(@ptrCast(resource), size)) catch
-        return error.CouldNotInitializeStreamFromMemory;
-    defer _ = stream.IUnknown.Release();
+    var bitmap = try gdip.Bitmap.new(alloc);
+    if (h_buffer != 0) {
+        const p_buffer_opt = w32.system.memory.GlobalLock(h_buffer);
+        if (p_buffer_opt) |p_buffer| {
+            defer _ = w32.system.memory.GlobalUnlock(@intCast(@intFromPtr(p_buffer)));
+            @memcpy(@as([*]u8, @ptrCast(p_buffer))[0..size], @as([*]u8, @ptrCast(resource))[0..size]);
 
-    const decoder = decoder: {
-        var decoder_opt: ?*imaging.IWICBitmapDecoder = null;
-        CHECK(iwic_factory.CreateDecoderFromStream(
-            @ptrCast(stream),
-            null,
-            imaging.WICDecodeMetadataCacheOnLoad,
-            &decoder_opt,
-        )) catch
-            return error.CouldNotCreateDecoder;
-        break :decoder decoder_opt orelse return error.CouldNotCreateDecoder;
-    };
-    defer _ = decoder.IUnknown.Release();
-
-    const source = source: {
-        var source_opt: ?*imaging.IWICBitmapSource = null;
-        CHECK(decoder.GetFrame(0, @ptrCast(&source_opt))) catch
-            return error.CouldNotGetFrame;
-        break :source source_opt orelse return error.CouldNotGetFrame;
-    };
-    defer _ = source.IUnknown.Release();
-
-    const converter = converter: {
-        var converter_opt: ?*imaging.IWICFormatConverter = null;
-        // Convert Image format to 32bppPBGRA
-        // (DXGI_FORMAT_B8G8R8A8_UNORM + D2D1_ALPHA_MODE_PREMULTIPLIED)
-        // In English: converts the image to 32bit with premultiplied alpha
-        CHECK(iwic_factory.CreateFormatConverter(&converter_opt)) catch
-            return error.CouldNotCreateFormatConverter;
-        break :converter converter_opt orelse return error.CouldNotCreateFormatConverter;
-    };
-    defer _ = converter.IUnknown.Release();
-
-    var pixel_format: w32.zig.Guid = imaging.GUID_WICPixelFormat32bppPBGRA;
-
-    // Initialize the converter
-    CHECK(converter.Initialize(
-        source,
-        &pixel_format,
-        .itmapDitherTypeNone, // TODO: report typo
-        null,
-        0,
-        .itmapPaletteTypeMedianCut,
-    )) catch
-        return error.CouldNotInitializeConverter;
-
-    // Create a D2D bitmap from the WIC bitmap
-    const bitmap = bitmap: {
-        var bitmap_opt: ?*direct2d.ID2D1Bitmap = null;
-        CHECK(render_target.CreateBitmapFromWicBitmap(@ptrCast(converter), null, &bitmap_opt)) catch
-            return error.CouldNotCreateD2DBitmap;
-        break :bitmap bitmap_opt orelse return error.CouldNotCreateD2DBitmap;
-    };
+            var p_stream: ?*w32.system.com.IStream = null;
+            if (w32.system.com.structured_storage.CreateStreamOnHGlobal(@intCast(@intFromPtr(p_buffer)), FALSE, &p_stream) == w32.foundation.S_OK) {
+                _ = gdip.GdipCreateBitmapFromStream(p_stream.?, &bitmap);
+                _ = p_stream.?.IUnknown.Release();
+            }
+        }
+    }
 
     return bitmap;
 }
@@ -819,9 +744,89 @@ const Resource = struct {
 };
 
 // We have 2 dependencies: the zig standard library and zigwin32.
-// TODO: Copy the necessary functions from zigwin32 into this file. Or remove this comment.
 const std = @import("std");
 const w32 = @import("zigwin32");
-const direct2d = w32.graphics.direct2d;
-const imaging = w32.graphics.imaging;
-const auth = w32.security.authorization;
+
+// We need GdiPlus for loading our PNG files. Unfortunately, GdiPlus is
+// exclusively a C++ API. It is based on a flat C API, but Microsoft
+// will not give you support if you use it. They don't include it in
+// the metadata that zigwin32 uses to generate it's bindings.
+//
+// Well, I don't really expect support from Microsoft and I'd rather
+// not drag in C++, so I've manually defined the extern functions here.
+const gdip = struct {
+    const BitmapInternal = extern struct {
+        image_type: c_int,
+        image_format: c_int,
+        num_of_frames: c_int,
+        frames: *anyopaque,
+        active_frame: c_int,
+        active_bitmap_no: c_int,
+        active_bitmap: *anyopaque,
+        cairo_format: c_int,
+        surface: *anyopaque,
+    };
+    const Bitmap = opaque {
+        fn new(allocator: std.mem.Allocator) !*Bitmap {
+            const ptr = try allocator.create(BitmapInternal);
+            ptr.* = std.mem.zeroes(BitmapInternal);
+            return @ptrCast(ptr);
+        }
+
+        fn GetWidth(bmp: *Bitmap) u32 {
+            var val: u32 = 0;
+            _ = GdipGetImageWidth(bmp, &val);
+            return val;
+        }
+
+        fn GetHeight(bmp: *Bitmap) u32 {
+            var val: u32 = 0;
+            _ = GdipGetImageHeight(bmp, &val);
+            return val;
+        }
+
+        fn AsImage(bmp: *Bitmap) *GpImage {
+            return @ptrCast(bmp);
+        }
+    };
+    const GpImage = opaque {};
+    const GpGraphics = opaque {
+        fn CreateFromHDC(hdc: w32.graphics.gdi.HDC) ?*GpGraphics {
+            var graphics: ?*GpGraphics = null;
+            _ = GdipCreateFromHDC(hdc, &graphics);
+            return graphics;
+        }
+
+        fn DrawImageRectI(graphics: *GpGraphics, image: *GpImage, x: i32, y: i32, width: i32, height: i32) void {
+            _ = GdipDrawImageRectI(graphics, image, x, y, width, height);
+        }
+    };
+    const GpStatus = enum(c_int) {
+        Ok = 0,
+        GenericError = 1,
+        InvalidParameter = 2,
+        OutOfMemory = 3,
+        ObjectBusy = 4,
+        InsufficientBuffer = 5,
+        NotImplemented = 6,
+        Win32Error = 7,
+        WrongState = 8,
+        Aborted = 9,
+        FileNotFound = 10,
+        ValueOverflow = 11,
+        AccessDenied = 12,
+        UnknownImageFormat = 13,
+        FontFamilyNotFound = 14,
+        FontStyleNotFound = 15,
+        NotTrueTypeFont = 16,
+        UnsupportedGdiplusVersion = 17,
+        GdiplusNotInitialized = 18,
+        PropertyNotFound = 19,
+        PropertyNotSupported = 20,
+    };
+    extern "gdiplus" fn GdipCreateBitmapFromStream(stream: *anyopaque, bitmap: **Bitmap) callconv(.C) GpStatus;
+    extern "gdiplus" fn GdipGetImageWidth(image: *anyopaque, width: *u32) callconv(.C) GpStatus;
+    extern "gdiplus" fn GdipGetImageHeight(image: *anyopaque, height: *u32) callconv(.C) GpStatus;
+    extern "gdiplus" fn GdipCreateFromHDC(hdc: w32.graphics.gdi.HDC, graphics: *?*GpGraphics) callconv(.C) GpStatus;
+    extern "gdiplus" fn GdipDrawImageRectI(graphics: *GpGraphics, image: *GpImage, x: c_int, y: c_int, width: c_int, height: c_int) callconv(.C) GpStatus;
+};
