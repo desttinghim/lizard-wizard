@@ -1,5 +1,5 @@
 /// A customizable Win32 install wizard to be used on disks as an autorun application.
-/// Inspired and loosely based on the "Writing a Wizard like it's 2020" series of articles,
+/// Inspired by and loosely based on the "Writing a Wizard like it's 2020" series of articles,
 /// available at https://building.enlyze.com/posts/writing-win32-apps-like-its-2020-part-1/
 
 // Copyright (c) 2024 Louis Pearson
@@ -120,7 +120,7 @@ const App = struct {
                 .HREDRAW = 1,
                 .VREDRAW = 1,
             },
-            .lpfnWndProc = _WndProc,
+            .lpfnWndProc = GetWndProcForType(App),
             .hInstance = h_instance,
             .hCursor = WAM.LoadCursorW(null, WAM.IDI_APPLICATION),
             .hIcon = app_icon,
@@ -200,43 +200,6 @@ const App = struct {
         while (w32.ui.windows_and_messaging.GetMessageW(&msg, null, 0, 0) > 0) {
             _ = w32.ui.windows_and_messaging.TranslateMessage(&msg);
             _ = w32.ui.windows_and_messaging.DispatchMessageW(&msg);
-        }
-    }
-
-    fn _WndProc(
-        handle: w32.foundation.HWND,
-        msg: u32,
-        wparam: w32.foundation.WPARAM,
-        lparam: w32.foundation.LPARAM,
-    ) callconv(.C) w32.foundation.LRESULT {
-        const WAM = w32.ui.windows_and_messaging;
-
-        instance: {
-            const app = InstanceFromWndProc(App, handle, msg, lparam) catch break :instance;
-            switch (msg) {
-                WAM.WM_COMMAND => return ErrToLRESULT(app.OnCommand(wparam)),
-                WAM.WM_CREATE => return ErrToLRESULT(app.OnCreate()),
-                WAM.WM_DESTROY => return ErrToLRESULT(app.OnDestroy()),
-                WAM.WM_DPICHANGED => return ErrToLRESULT(app.OnDpiChanged(wparam, lparam)),
-                WAM.WM_GETMINMAXINFO => return ErrToLRESULT(app.OnGetMinMaxInfo(lparam)),
-                WAM.WM_PAINT => return ErrToLRESULT(app.OnPaint()),
-                WAM.WM_SIZE => return ErrToLRESULT(app.OnSize()),
-                else => {},
-            }
-        }
-
-        std.log.info("Uncaught message {}", .{msg});
-
-        return WAM.DefWindowProcW(handle, msg, wparam, lparam);
-    }
-
-    fn ErrToLRESULT(maybe_err: anytype) w32.foundation.LRESULT {
-        if (maybe_err) {
-            return 0;
-        } else |err| {
-            // TODO: Log error
-            std.log.err("Error in callback: {!}", .{err});
-            return 1;
         }
     }
 
@@ -865,6 +828,47 @@ fn SafeRelease(interface: anytype) void {
 fn mulDiv(pixels: i32, current_dpi: i32, reference_dpi: i32) i32 {
     const scaled = pixels * current_dpi;
     return @divTrunc(scaled, reference_dpi);
+}
+
+fn GetWndProcForType(comptime T: type) w32.ui.windows_and_messaging.WNDPROC {
+    return &(struct {
+        fn _WndProc(
+            handle: w32.foundation.HWND,
+            msg: u32,
+            wparam: w32.foundation.WPARAM,
+            lparam: w32.foundation.LPARAM,
+        ) callconv(.C) w32.foundation.LRESULT {
+            const WAM = w32.ui.windows_and_messaging;
+
+            instance: {
+                const this = InstanceFromWndProc(T, handle, msg, lparam) catch break :instance;
+                switch (msg) {
+                    WAM.WM_COMMAND => if (@hasDecl(T, "OnCommand")) return ErrToLRESULT(this.OnCommand(wparam)),
+                    WAM.WM_CREATE => if (@hasDecl(T, "OnCreate")) return ErrToLRESULT(this.OnCreate()),
+                    WAM.WM_DESTROY => if (@hasDecl(T, "OnDestroy")) return ErrToLRESULT(this.OnDestroy()),
+                    WAM.WM_DPICHANGED => if (@hasDecl(T, "OnDpiChanged")) return ErrToLRESULT(this.OnDpiChanged(wparam, lparam)),
+                    WAM.WM_GETMINMAXINFO => if (@hasDecl(T, "OnGetMinMaxInfo")) return ErrToLRESULT(this.OnGetMinMaxInfo(lparam)),
+                    WAM.WM_PAINT => if (@hasDecl(T, "OnPaint")) return ErrToLRESULT(this.OnPaint()),
+                    WAM.WM_SIZE => if (@hasDecl(T, "OnSize")) return ErrToLRESULT(this.OnSize()),
+                    else => {},
+                }
+            }
+
+            std.log.info("Uncaught message {}", .{msg});
+
+            return WAM.DefWindowProcW(handle, msg, wparam, lparam);
+        }
+
+        fn ErrToLRESULT(maybe_err: anytype) w32.foundation.LRESULT {
+            if (maybe_err) {
+                return 0;
+            } else |err| {
+                // TODO: Log error
+                std.log.err("Error in callback: {!}", .{err});
+                return 1;
+            }
+        }
+    })._WndProc;
 }
 
 const Func_GetDpiForMonitor = *const fn (w32.graphics.gdi.HMONITOR, c_int, *c_uint, *c_uint) w32.foundation.HRESULT;
