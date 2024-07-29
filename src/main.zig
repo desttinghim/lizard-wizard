@@ -28,6 +28,9 @@ const Conf = struct {
     const window_min_height = 500;
     const window_min_width = 700;
     const reference_dpi = 96;
+    const unified_control_padding = 10;
+    const button_width = 90;
+    const button_height = 23;
 };
 
 const TRUE: w32.foundation.BOOL = 1;
@@ -72,6 +75,7 @@ const CommandID = enum(c_int) {
 
 const App = struct {
     hwnd: w32.foundation.HWND,
+    allocator: std.mem.Allocator,
 
     d2d_factory: *direct2d.ID2D1Factory,
     iwic_factory: *imaging.IWICImagingFactory,
@@ -83,8 +87,14 @@ const App = struct {
     window_current_dpi: i32 = 0,
     d2d_bitmap_logo: *direct2d.ID2D1Bitmap,
 
+    font_family_name: []u16,
     text_format_gui: *w32.graphics.direct_write.IDWriteTextFormat,
     text_format_gui_bold: *w32.graphics.direct_write.IDWriteTextFormat,
+
+    hwnd_line: w32.foundation.HWND,
+    btn_back: w32.foundation.HWND,
+    btn_next: w32.foundation.HWND,
+    btn_cancel: w32.foundation.HWND,
 
     // font_attr_gui: w32.graphics.gdi.LOGFONTW,
     // font_attr_gui_bold: w32.graphics.gdi.LOGFONTW,
@@ -122,6 +132,8 @@ const App = struct {
 
         const self = try allocator.create(App);
         errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
 
         // Create window
         const hwnd = w32.ui.windows_and_messaging.CreateWindowExW(
@@ -233,6 +245,7 @@ const App = struct {
         // Fields other than hwnd are currently undefined, do not use them
         std.log.info("oncreate window handle {}", .{app.hwnd});
         const hwnd = app.hwnd;
+        const allocator = app.allocator;
         const h_instance = w32.system.library_loader.GetModuleHandleW(null) orelse return error.RetrievingHInstance;
 
         // Device independent setup
@@ -321,78 +334,109 @@ const App = struct {
         const bitmap_logo = try loadPNGAsD2DBitmap(@ptrCast(render_target), iwic_factory, h_instance, @intFromEnum(ResourceID.logo));
         std.log.info("bitmap_logo {}", .{bitmap_logo});
 
-        // Query what the default font is and load it into memory
+        // Query what the default system font is
         var ncm = std.mem.zeroes(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
         ncm.cbSize = @sizeOf(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
         _ = w32.ui.windows_and_messaging.SystemParametersInfoW(w32.ui.windows_and_messaging.SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, .{});
 
         var font_attr_gui = ncm.lfMessageFont;
 
-        // Make a copy of the LOGFONTW struct
-        var font_attr_gui_bold = font_attr_gui;
-        font_attr_gui_bold.lfWeight = w32.graphics.gdi.FW_BOLD;
-
-        std.log.info("Font {}", .{std.unicode.fmtUtf16Le(std.mem.sliceTo(&font_attr_gui.lfFaceName, 0))});
-
         const font_gui = font_gui: {
             var option: ?*w32.graphics.direct_write.IDWriteFont = null;
             CHECK(dwrite_gdi_interop.CreateFontFromLOGFONT(&font_attr_gui, &option)) catch
-                return error.InitDWriteFontGui;
-            break :font_gui option orelse return error.InitDWriteFontGui;
+                return error.InitDWriteFont;
+            break :font_gui option orelse return error.InitDWriteFont;
         };
-        std.log.info("font_gui {}", .{font_gui});
 
-        // const font_gui_bold = font_gui: {
-        //     var option: ?*w32.graphics.direct_write.IDWriteFont = null;
-        //     CHECK(dwrite_gdi_interop.CreateFontFromLOGFONT(&font_attr_gui_bold, &option)) catch
-        //         return error.InitDWriteFontGuiBold;
-        //     break :font_gui option orelse return error.InitDWriteFontGuiBold;
-        // };
-        // std.log.info("font_gui_bold {}", .{font_gui_bold});
+        const gdi_font_gui = w32.graphics.gdi.CreateFontIndirectW(&font_attr_gui) orelse return error.InitGDIFont;
 
-        // Get the system font's family
-        var family: ?*w32.graphics.direct_write.IDWriteFontFamily = null;
-        _ = font_gui.GetFontFamily(&family);
+        // Get the system font's family and save it as a string
+        const family = family: {
+            var family: ?*w32.graphics.direct_write.IDWriteFontFamily = null;
+            CHECK(font_gui.GetFontFamily(&family)) catch
+                return error.InitDWriteFontFamily;
+            break :family family orelse return error.InitDWriteFontGui;
+        };
 
-        var font_family_name: ?*w32.graphics.direct_write.IDWriteLocalizedStrings = null;
-        _ = family.?.GetFamilyNames(&font_family_name);
+        const font_family_name = font_family_name: {
+            var font_family_name: ?*w32.graphics.direct_write.IDWriteLocalizedStrings = null;
+            CHECK(family.GetFamilyNames(&font_family_name)) catch
+                return error.GetFontFamilyName;
+            break :font_family_name font_family_name orelse return error.GetFontFamilyName;
+        };
 
         var index: u32 = 0;
         var length: u32 = 0;
         var exists: w32.foundation.BOOL = FALSE;
 
-        _ = font_family_name.?.FindLocaleName(w32.zig.L("en-US"), &index, &exists);
-        _ = font_family_name.?.GetStringLength(index, &length);
+        try CHECK(font_family_name.FindLocaleName(w32.zig.L("en-US"), &index, &exists));
+        try CHECK(font_family_name.GetStringLength(index, &length));
 
-        var name_buf: [100]u16 = undefined;
-        _ = font_family_name.?.GetString(index, @ptrCast(&name_buf), length + 1);
-        const name = name_buf[0..length :0];
+        const name = try allocator.alloc(u16, length + 1);
+        try CHECK(font_family_name.GetString(index, @ptrCast(name.ptr), length + 1));
 
-        const font_weight = w32.graphics.direct_write.DWRITE_FONT_WEIGHT_NORMAL;
         const font_style = w32.graphics.direct_write.DWRITE_FONT_STYLE_NORMAL;
         const font_stretch = w32.graphics.direct_write.DWRITE_FONT_STRETCH_NORMAL;
 
         var text_format: ?*w32.graphics.direct_write.IDWriteTextFormat = null;
-        _ = dwrite_factory.CreateTextFormat(name, null, font_weight, font_style, font_stretch, 12.0, w32.zig.L("en-us"), &text_format);
+        try CHECK(dwrite_factory.CreateTextFormat(
+            @ptrCast(name.ptr),
+            null,
+            w32.graphics.direct_write.DWRITE_FONT_WEIGHT_NORMAL,
+            font_style,
+            font_stretch,
+            12.0,
+            w32.zig.L("en-us"),
+            &text_format,
+        ));
 
         var text_format_bold: ?*w32.graphics.direct_write.IDWriteTextFormat = null;
-        _ = dwrite_factory.CreateTextFormat(name, null, w32.graphics.direct_write.DWRITE_FONT_WEIGHT_BOLD, font_style, font_stretch, 12.0, w32.zig.L("en-us"), &text_format_bold);
+        try CHECK(dwrite_factory.CreateTextFormat(
+            @ptrCast(name.ptr),
+            null,
+            w32.graphics.direct_write.DWRITE_FONT_WEIGHT_BOLD,
+            font_style,
+            font_stretch,
+            12.0,
+            w32.zig.L("en-us"),
+            &text_format_bold,
+        ));
 
-        // const empty_str = w32.zig.L("");
-        // const WC_STATIC = w32.ui.controls.WC_STATICW;
-        // const WC_BUTTON = w32.ui.controls.WC_BUTTONW;
+        const empty_str = w32.zig.L("");
+        // TODO: report lack of L for class names
+        const WC_STATIC = w32.zig.L("Static");
+        const WC_BUTTON = w32.zig.L("Button");
 
-        // TODO
-        // // Create the line above the buttons
-        // const hwnd_line = w32.ui.windows_and_messaging.CreateWindowExW(.{}, WC_STATIC, empty_str, .{ .CHILD = 1, .VISIBLE = 1, .SUNKEN = 1 }, 0, 0, 0, 0, hwnd, ResourceID.back, null, null) orelse
-        //     return error.CreateLine;
+        const IDC_BACK = 500;
+        const IDC_NEXT = 501;
+        const IDC_CANCEL = 502;
 
-        // // Create the bottom buttons
-        // const hwnd_line = w32.ui.windows_and_messaging.CreateWindowExW(.{}, WC_BUTTON, empty_str, .{ .CHILD = 1, .VISIBLE = 1, .SUNKEN = 1 }, 0, 0, 0, 0, hwnd, ResourceID.back, null, null) orelse
-        //     return error.CreateBack;
+        // Create the line above the buttons
+        const hwnd_line = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_STATIC), empty_str, .{ .CHILD = 1, .VISIBLE = 1 }, 0, 0, 0, 0, hwnd, null, null, null) orelse
+            {
+            printLastError();
+            return error.CreateLine;
+        };
+
+        // Create the bottom buttons
+        const str_back = Resource.stringLoad(h_instance, RES.IDS_BACK);
+        const hwnd_back = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_back, .{ .CHILD = 1, .VISIBLE = 1, .DISABLED = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_BACK), null, null) orelse
+            return error.CreateBack;
+        _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_back, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
+
+        const str_next = Resource.stringLoad(h_instance, RES.IDS_NEXT);
+        const hwnd_next = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_next, .{ .CHILD = 1, .VISIBLE = 1, .DISABLED = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_NEXT), null, null) orelse
+            return error.CreateNext;
+        _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_next, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
+
+        const str_cancel = Resource.stringLoad(h_instance, RES.IDS_CANCEL);
+        const hwnd_cancel = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_cancel, .{ .CHILD = 1, .VISIBLE = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_CANCEL), null, null) orelse
+            return error.CreateBack;
+        _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_cancel, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
 
         app.* = .{
             .hwnd = hwnd,
+            .allocator = allocator,
             .window_current_dpi = dpi,
 
             .d2d_factory = d2d_factory,
@@ -402,17 +446,20 @@ const App = struct {
 
             .d2d_render_target = render_target,
             .d2d_bitmap_logo = bitmap_logo,
-
             .d2d_brush_black = black_brush,
-            // .font_attr_gui = font_attr_gui,
-            // .font_attr_gui_bold = font_attr_gui_bold,
-            // .font_gui = font_gui,
-            // .font_gui_bold = font_gui_bold,
+
+            .font_family_name = name,
             .text_format_gui = text_format.?,
             .text_format_gui_bold = text_format_bold.?,
+
+            .hwnd_line = hwnd_line,
+            .btn_back = hwnd_back,
+            .btn_next = hwnd_next,
+            .btn_cancel = hwnd_cancel,
         };
 
         // Create all pages
+        // TODO
 
         // Set the main window size
         const dpif: f32 = @floatFromInt(app.window_current_dpi);
@@ -448,8 +495,8 @@ const App = struct {
 
     fn OnDestroy(app: *App) !void {
         std.log.info("WM_DESTROY", .{});
-        _ = app;
         w32.ui.windows_and_messaging.PostQuitMessage(0);
+        app.allocator.free(app.font_family_name);
     }
 
     fn OnDpiChanged(app: *App, wparam: WPARAM, lparam: LPARAM) !void {
@@ -475,12 +522,13 @@ const App = struct {
 
     fn OnGetMinMaxInfo(app: *App, lparam: LPARAM) !void {
         std.log.info("WM_GETMINMAXINFO", .{});
-        _ = app;
-        _ = lparam;
+        const min_max_info: *w32.ui.windows_and_messaging.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+
+        min_max_info.ptMinTrackSize.x = mulDiv(Conf.window_min_width, app.window_current_dpi, Conf.reference_dpi);
+        min_max_info.ptMinTrackSize.y = mulDiv(Conf.window_min_height, app.window_current_dpi, Conf.reference_dpi);
     }
 
     fn OnPaint(app: *App) !void {
-        std.log.info("WM_PAINT", .{});
         const hello_world = w32.zig.L("Hello, World!");
 
         const render_target = app.d2d_render_target;
@@ -489,8 +537,22 @@ const App = struct {
         defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
 
         _ = render_target.ID2D1RenderTarget.SetTransform(&identity);
-
         _ = render_target.ID2D1RenderTarget.Clear(&white);
+
+        // const size = render_target.ID2D1RenderTarget.GetSize();
+        const window = direct2d.common.D2D_RECT_F{
+            .left = 0,
+            .top = 0,
+            .right = Conf.window_min_width,
+            .bottom = Conf.window_min_height,
+        };
+
+        var brush_solid_white_opt: ?*direct2d.ID2D1SolidColorBrush = null;
+        _ = render_target.ID2D1RenderTarget.CreateSolidColorBrush(&white, null, &brush_solid_white_opt);
+        const brush_solid_white = brush_solid_white_opt.?;
+        defer _ = brush_solid_white.IUnknown.Release();
+
+        _ = render_target.ID2D1RenderTarget.FillRectangle(&window, @ptrCast(brush_solid_white));
 
         _ = render_target.ID2D1RenderTarget.DrawRectangle(
             &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
@@ -521,10 +583,47 @@ const App = struct {
     fn OnSize(app: *App) !void {
         std.log.info("WM_SIZE", .{});
 
+        // Get window size
         var window_rect: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
         try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &window_rect));
-        // std.log.info("got window rect: {}, {}, {}, {}", .{ window_rect.left, window_rect.right, window_rect.top, window_rect.bottom });
 
+        // TODO: Redraw header on every size change
+
+        { // Move the buttons
+            var hdwp = w32.ui.windows_and_messaging.BeginDeferWindowPos(5);
+            if (hdwp == 0) return error.BeginDeferringWindowPos;
+            defer _ = w32.ui.windows_and_messaging.EndDeferWindowPos(hdwp);
+
+            const control_padding = mulDiv(Conf.unified_control_padding, app.window_current_dpi, Conf.reference_dpi);
+            const button_height = mulDiv(Conf.button_height, app.window_current_dpi, Conf.reference_dpi);
+            const button_width = mulDiv(Conf.button_width, app.window_current_dpi, Conf.reference_dpi);
+
+            var button_x = window_rect.right - control_padding - button_width;
+            const button_y = window_rect.bottom - control_padding - button_height;
+
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.btn_cancel, null, button_x, button_y, button_width, button_height, .{});
+            if (hdwp == 0) return error.DeferWindowPos;
+
+            button_x = button_x - control_padding - button_width;
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.btn_next, null, button_x, button_y, button_width, button_height, .{});
+            if (hdwp == 0) return error.DeferWindowPos;
+
+            button_x = button_x - button_width;
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.btn_back, null, button_x, button_y, button_width, button_height, .{});
+            if (hdwp == 0) return error.DeferWindowPos;
+
+            // Move the line above the buttons
+            const line_height = 2;
+            const line_width = window_rect.right;
+            const line_x = 0;
+            const line_y = button_y - control_padding;
+
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.hwnd_line, null, line_x, line_y, line_width, line_height, .{});
+            if (hdwp == 0) return error.DeferWindowPos;
+
+            // TODO: move page windows
+
+        }
         const width = window_rect.right - window_rect.left;
         const height = window_rect.bottom - window_rect.top;
 
@@ -621,6 +720,16 @@ fn CHECK_BOOL(result: w32.foundation.BOOL) !void {
     if (err == .NO_ERROR) return;
 
     return error.Unknown;
+}
+
+fn printLastError() void {
+    const err = w32.foundation.GetLastError();
+
+    const err_name = @tagName(err);
+    std.log.err("Win32 Error encountered: {s}", .{err_name});
+    if (@errorReturnTrace()) |trace| {
+        std.debug.dumpStackTrace(trace);
+    }
 }
 
 fn InstanceFromWndProc(comptime T: type, hwnd: w32.foundation.HWND, msg: u32, lparam: w32.foundation.LPARAM) !*T {
@@ -808,11 +917,12 @@ fn loadPNGAsD2DBitmap(
 }
 
 const Resource = struct {
-    fn stringLoad(h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[]const u16 {
-        var pointer: ?[*]const u16 = null;
-        const char_count = w32.ui.windows_and_messaging.LoadStringW(h_instance, u_id, &pointer, 0);
+    fn stringLoad(h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[*:0]const u16 {
+        var pointer: ?[*:0]u16 = null;
+        const char_count = w32.ui.windows_and_messaging.LoadStringW(h_instance, u_id, @ptrCast(&pointer), 0);
         if (char_count == 0) return null;
-        return pointer[0..char_count];
+        const p = pointer orelse return null;
+        return p;
     }
 };
 
