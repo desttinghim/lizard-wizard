@@ -72,6 +72,7 @@ pub fn main() !u8 {
 
 const App = struct {
     hwnd: w32.foundation.HWND,
+    h_instance: w32.foundation.HINSTANCE,
     allocator: std.mem.Allocator,
 
     window_current_dpi: i32 = 0,
@@ -93,6 +94,10 @@ const App = struct {
     str_cancel: [*:0]const u16,
 
     bmp_logo: *gdip.Bitmap,
+
+    page_current: *Page,
+    page_one: *PageOne,
+    // page_two: *PageTwo,
 
     const class_name = w32.zig.L("GameDisk");
     const window_title = w32.zig.L("Hello from zig"); // Title
@@ -127,6 +132,7 @@ const App = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
+        self.h_instance = h_instance;
 
         // Create window
         const hwnd = w32.ui.windows_and_messaging.CreateWindowExW(
@@ -164,7 +170,7 @@ const App = struct {
         return self;
     }
 
-    fn set_header(app: *App, text_header: [*:0]u16, text_subheader: [*:0]u16) void {
+    fn set_header(app: *App, text_header: []const u16, text_subheader: []const u16) void {
         app.str_header = text_header;
         app.str_subheader = text_subheader;
 
@@ -173,6 +179,21 @@ const App = struct {
         CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &rect_header)) catch return;
         rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
         _ = w32.graphics.gdi.InvalidateRect(app.hwnd, &rect_header, FALSE);
+    }
+
+    fn enable_back_button(app: *App, is_enabled: bool) void {
+        _ = w32.ui.input.keyboard_and_mouse.EnableWindow(app.btn_back, if (is_enabled) TRUE else FALSE);
+    }
+
+    fn enable_next_button(app: *App, is_enabled: bool) void {
+        _ = w32.ui.input.keyboard_and_mouse.EnableWindow(app.btn_next, if (is_enabled) TRUE else FALSE);
+    }
+
+    fn SwitchPage(app: *App, new_page: *Page) void {
+        app.page_current = new_page;
+        _ = w32.ui.windows_and_messaging.ShowWindow(app.page_one.page.GetHWND(&app.page_one.page), .{});
+        // _ = w32.ui.windows_and_messaging.ShowWindow(app.page_second, .{});
+        new_page.SwitchTo(new_page);
     }
 
     fn destroy(app: *App, allocator: std.mem.Allocator) void {
@@ -223,7 +244,7 @@ const App = struct {
         // Fields other than hwnd and allocator are currently undefined, do not use them
         const hwnd = app.hwnd;
         const allocator = app.allocator;
-        const h_instance = w32.system.library_loader.GetModuleHandleW(null) orelse return error.RetrievingHInstance;
+        const h_instance = app.h_instance;
 
         // Get the DPI for the monitor where the window is shown
         const dpi = GetWindowDPI(hwnd);
@@ -251,7 +272,20 @@ const App = struct {
         const WC_BUTTON = w32.zig.L("Button");
 
         // Create the line above the buttons
-        const hwnd_line = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_STATIC), empty_str, .{ .CHILD = 1, .VISIBLE = 1 }, 0, 0, 0, 0, hwnd, null, null, null) orelse
+        const hwnd_line = w32.ui.windows_and_messaging.CreateWindowExW(
+            .{},
+            @ptrCast(WC_STATIC),
+            empty_str,
+            .{ .CHILD = 1, .VISIBLE = 1, ._12 = 1 }, // ._12 is the bit for the SS_SUNKEN style
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            null,
+            null,
+            null,
+        ) orelse
             return error.CreateLine;
 
         // Create the bottom buttons
@@ -310,6 +344,7 @@ const App = struct {
         _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_cancel, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
 
         app.* = .{
+            .h_instance = h_instance,
             .hwnd = hwnd,
             .allocator = allocator,
             .window_current_dpi = dpi,
@@ -331,10 +366,13 @@ const App = struct {
             .str_cancel = str_cancel,
 
             .bmp_logo = bitmap_logo,
+
+            .page_one = try PageOne.create(app),
+            .page_current = &app.page_one.page,
         };
 
-        // Create all pages
-        // TODO
+        // TODO: Create all pages
+        app.SwitchPage(&app.page_one.page);
 
         // Set the main window size
         const dpif: f32 = @floatFromInt(app.window_current_dpi);
@@ -376,7 +414,9 @@ const App = struct {
         _ = (w32.ui.windows_and_messaging.SendMessageW(app.btn_next, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(app.font_gui), @intCast(TRUE)));
         _ = (w32.ui.windows_and_messaging.SendMessageW(app.btn_cancel, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(app.font_gui), @intCast(TRUE)));
 
-        // TODO: Update DPI for child windows
+        // Update DPI for child windows
+        app.page_one.page.UpdateDPI(&app.page_one.page);
+        // app.page_two.page.UpdateDPI(&app.page_two.page);
 
         // Use the suggested new window size
         const window_rect_new: *const w32.foundation.RECT = @ptrFromInt(@as(usize, @intCast(lparam)));
@@ -393,6 +433,7 @@ const App = struct {
 
         min_max_info.ptMinTrackSize.x = mulDiv(Conf.window_min_width, app.window_current_dpi, Conf.reference_dpi);
         min_max_info.ptMinTrackSize.y = mulDiv(Conf.window_min_height, app.window_current_dpi, Conf.reference_dpi);
+        std.log.info("min x: {}, min y: {}", .{ min_max_info.ptMinTrackSize.x, min_max_info.ptMinTrackSize.y });
     }
 
     fn OnPaint(app: *App) !void {
@@ -400,81 +441,75 @@ const App = struct {
         var rect_window: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
         try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &rect_window));
 
-        const h_theme = w32.ui.controls.OpenThemeData(app.hwnd, w32.zig.L("Window"));
-        defer _ = w32.ui.controls.CloseThemeData(h_theme);
-
         const white_brush: w32.graphics.gdi.HBRUSH = @ptrCast(w32.graphics.gdi.GetStockObject(w32.graphics.gdi.WHITE_BRUSH));
-        // const color_btnface = w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE));
 
-        {
-            // Begin double-buffered paint
-            var paint = std.mem.zeroes(w32.graphics.gdi.PAINTSTRUCT);
-            const dc = w32.graphics.gdi.BeginPaint(app.hwnd, &paint);
-            defer _ = w32.graphics.gdi.EndPaint(app.hwnd, &paint);
+        // Begin double-buffered paint
+        var paint = std.mem.zeroes(w32.graphics.gdi.PAINTSTRUCT);
+        const dc = w32.graphics.gdi.BeginPaint(app.hwnd, &paint);
+        defer _ = w32.graphics.gdi.EndPaint(app.hwnd, &paint);
 
-            const dc_mem = w32.graphics.gdi.CreateCompatibleDC(dc);
-            defer _ = w32.graphics.gdi.DeleteDC(dc_mem);
+        const dc_mem = w32.graphics.gdi.CreateCompatibleDC(dc);
+        defer _ = w32.graphics.gdi.DeleteDC(dc_mem);
 
-            const bitmap_mem = w32.graphics.gdi.CreateCompatibleBitmap(dc, rect_window.right, rect_window.bottom);
-            defer _ = w32.graphics.gdi.DeleteObject(bitmap_mem);
+        const bitmap_mem = w32.graphics.gdi.CreateCompatibleBitmap(dc, rect_window.right, rect_window.bottom);
+        defer _ = w32.graphics.gdi.DeleteObject(bitmap_mem);
 
-            _ = w32.graphics.gdi.SelectObject(dc_mem, bitmap_mem);
+        _ = w32.graphics.gdi.SelectObject(dc_mem, bitmap_mem);
 
-            // Draw a white rectangle completely filling the header of the window.
-            var rect_header = rect_window;
-            rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
-            _ = w32.graphics.gdi.FillRect(dc_mem, &rect_header, white_brush);
+        // Draw a white rectangle completely filling the header of the window.
+        var rect_header = rect_window;
+        rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
+        _ = w32.graphics.gdi.FillRect(dc_mem, &rect_header, white_brush);
 
-            // Draw the header text
-            var rect_header_text = rect_header;
-            rect_header_text.left = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
-            rect_header_text.top = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
-            _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui_bold);
-            const text_res = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_header.ptr), @intCast(app.str_header.len), &rect_header_text, .{});
-            std.log.info("draw text res {} rect {}", .{ text_res, rect_header_text });
+        // Draw the header text
+        var rect_header_text = rect_header;
+        rect_header_text.left = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
+        rect_header_text.top = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
+        _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui_bold);
+        const text_res = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_header.ptr), @intCast(app.str_header.len), &rect_header_text, .{});
+        std.log.info("draw text res {} rect {}", .{ text_res, rect_header_text });
 
-            // Draw the subheader text
-            var rect_subheader_text = rect_header;
-            rect_subheader_text.left = mulDiv(20, app.window_current_dpi, Conf.reference_dpi);
-            rect_subheader_text.top = mulDiv(32, app.window_current_dpi, Conf.reference_dpi);
-            _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui);
-            _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_subheader.ptr), @intCast(app.str_subheader.len), &rect_subheader_text, .{});
+        // Draw the subheader text
+        var rect_subheader_text = rect_header;
+        rect_subheader_text.left = mulDiv(20, app.window_current_dpi, Conf.reference_dpi);
+        rect_subheader_text.top = mulDiv(32, app.window_current_dpi, Conf.reference_dpi);
+        _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui);
+        _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_subheader.ptr), @intCast(app.str_subheader.len), &rect_subheader_text, .{});
 
-            // TODO: Draw logo into upper right corner
-            const logo_padding = mulDiv(5, app.window_current_dpi, Conf.reference_dpi);
-            const dest_bitmap_height = rect_header.bottom - 2 * logo_padding;
-            const dest_bitmap_width = @divFloor(@as(i32, @intCast(app.bmp_logo.GetWidth())) * dest_bitmap_height, @as(i32, @intCast(app.bmp_logo.GetHeight())));
-            const dest_bitmap_x = rect_window.right - logo_padding - dest_bitmap_width;
-            const dest_bitmap_y = logo_padding;
+        // TODO: Draw logo into upper right corner
+        const logo_padding = mulDiv(5, app.window_current_dpi, Conf.reference_dpi);
+        const dest_bitmap_height = rect_header.bottom - 2 * logo_padding;
+        const dest_bitmap_width = @divFloor(@as(i32, @intCast(app.bmp_logo.GetWidth())) * dest_bitmap_height, @as(i32, @intCast(app.bmp_logo.GetHeight())));
+        const dest_bitmap_x = rect_window.right - logo_padding - dest_bitmap_width;
+        const dest_bitmap_y = logo_padding;
 
-            const graphics = gdip.GpGraphics.CreateFromHDC(dc_mem);
-            graphics.?.DrawImageRectI(@ptrCast(app.bmp_logo), dest_bitmap_x, dest_bitmap_y, dest_bitmap_width, dest_bitmap_height);
+        const graphics = gdip.GpGraphics.CreateFromHDC(dc_mem) orelse return error.CreateGdipGraphics;
+        graphics.DrawImageRectI(@ptrCast(app.bmp_logo), dest_bitmap_x, dest_bitmap_y, dest_bitmap_width, dest_bitmap_height);
 
-            // Fill the rest of the window with the window background color.
-            var rect_background = rect_window;
-            rect_background.top = rect_header.bottom;
-            _ = w32.ui.controls.DrawThemeBackground(h_theme, dc_mem, @intFromEnum(w32.ui.controls.WP_DIALOG), 0, &rect_background, null);
+        // Fill the rest of the window with the window background color.
+        var rect_background = rect_window;
+        rect_background.top = rect_header.bottom;
+        _ = w32.graphics.gdi.FillRect(dc_mem, &rect_background, w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE)));
 
-            _ = w32.graphics.gdi.BitBlt(dc, 0, 0, rect_window.right, rect_window.bottom, dc_mem, 0, 0, w32.graphics.gdi.SRCCOPY);
-        }
+        _ = w32.graphics.gdi.BitBlt(dc, 0, 0, rect_window.right, rect_window.bottom, dc_mem, 0, 0, w32.graphics.gdi.SRCCOPY);
     }
 
     fn OnSize(app: *App) !void {
         std.log.info("WM_SIZE", .{});
 
         // Get window size
-        var window_rect: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
-        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &window_rect));
+        var rect_window: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &rect_window));
 
         // Redraw header on every size change
-        var rect_header = window_rect;
+        var rect_header = rect_window;
         rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
         _ = w32.graphics.gdi.InvalidateRect(app.hwnd, &rect_header, FALSE);
 
         // Update subwindow positions
         {
             // Move the buttons
-            var hdwp = w32.ui.windows_and_messaging.BeginDeferWindowPos(5);
+            var hdwp = w32.ui.windows_and_messaging.BeginDeferWindowPos(6);
             if (hdwp == 0) return error.BeginDeferringWindowPos;
             defer _ = w32.ui.windows_and_messaging.EndDeferWindowPos(hdwp);
 
@@ -482,8 +517,8 @@ const App = struct {
             const button_height = mulDiv(Conf.button_height, app.window_current_dpi, Conf.reference_dpi);
             const button_width = mulDiv(Conf.button_width, app.window_current_dpi, Conf.reference_dpi);
 
-            var button_x = window_rect.right - control_padding - button_width;
-            const button_y = window_rect.bottom - control_padding - button_height;
+            var button_x = rect_window.right - control_padding - button_width;
+            const button_y = rect_window.bottom - control_padding - button_height;
 
             hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.btn_cancel, null, button_x, button_y, button_width, button_height, .{});
             if (hdwp == 0) return error.DeferWindowPos;
@@ -498,25 +533,181 @@ const App = struct {
 
             // Move the line above the buttons
             const line_height = 2;
-            const line_width = window_rect.right;
+            const line_width = rect_window.right;
             const line_x = 0;
             const line_y = button_y - control_padding;
 
             hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.hwnd_line, null, line_x, line_y, line_width, line_height, .{});
             if (hdwp == 0) return error.DeferWindowPos;
 
-            // TODO: move page windows
+            // Move all page windows
+            const page_x = control_padding;
+            const page_y = rect_header.bottom + control_padding;
+            const page_height = line_y - page_y - control_padding;
+            const page_width = rect_window.right - page_x - control_padding;
 
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.page_one.hwnd, null, page_x, page_y, page_width, page_height, .{});
+            if (hdwp == 0) return error.DeferWindowPos;
         }
     }
 };
 
+const Page = struct {
+    GetHWND: *const fn (*Page) w32.foundation.HWND,
+    SwitchTo: *const fn (*Page) void,
+    UpdateDPI: *const fn (*Page) void,
+
+    fn FromStruct(comptime T: type) Page {
+        return .{
+            .GetHWND = &T.GetHWND,
+            .SwitchTo = &T.SwitchTo,
+            .UpdateDPI = &T.UpdateDPI,
+        };
+    }
+};
+
+const PageOne = struct {
+    page: Page,
+    hwnd: w32.foundation.HWND,
+    main_window: *App,
+    str_header: [:0]const u16,
+    str_subheader: [:0]const u16,
+    str_text: [:0]const u16,
+
+    const class_name = w32.zig.L("PageOneWndClass");
+
+    fn create(main_window: *App) !*PageOne {
+        const WAM = w32.ui.windows_and_messaging;
+
+        const window_class = w32.ui.windows_and_messaging.WNDCLASSW{
+            .style = w32.ui.windows_and_messaging.WNDCLASS_STYLES{
+                .HREDRAW = 1,
+                .VREDRAW = 1,
+            },
+            .lpfnWndProc = GetWndProcForType(PageOne),
+            .hInstance = main_window.h_instance,
+            .hCursor = WAM.LoadCursorW(null, WAM.IDI_APPLICATION),
+            .hIcon = null,
+            .hbrBackground = w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE)),
+            .lpszClassName = class_name,
+            .lpszMenuName = null,
+            .cbClsExtra = 0,
+            .cbWndExtra = 0,
+        };
+        const class_atom = atom: {
+            const res = WAM.RegisterClassW(&window_class);
+            if (res <= 0) return error.FailedToRegisterClass;
+            break :atom res;
+        };
+
+        const self = try main_window.allocator.create(PageOne);
+        errdefer main_window.allocator.destroy(self);
+
+        self.page = Page.FromStruct(PageOne);
+        self.main_window = main_window;
+
+        // Create window
+        const hwnd = w32.ui.windows_and_messaging.CreateWindowExW(
+            .{},
+            @ptrFromInt(class_atom),
+            w32.zig.L(""),
+            w32.ui.windows_and_messaging.WINDOW_STYLE{
+                .CHILD = TRUE,
+                .CLIPCHILDREN = TRUE,
+                .CLIPSIBLINGS = TRUE,
+            },
+            0,
+            0,
+            0,
+            0,
+            main_window.hwnd,
+            null,
+            main_window.h_instance,
+            self,
+        ) orelse {
+            const err = w32.foundation.GetLastError();
+            std.log.err("{s}", .{@tagName(err)});
+
+            // TODO: Handle specific errors with GetLastError()
+            return error.CouldNotCreateWindow;
+        };
+
+        std.log.info("created window handle {}", .{hwnd});
+
+        return self;
+    }
+
+    fn GetHWND(page: *Page) w32.foundation.HWND {
+        const page_one: *PageOne = @fieldParentPtr("page", page);
+        return page_one.hwnd;
+    }
+
+    fn SwitchTo(page: *Page) void {
+        const page_one: *PageOne = @fieldParentPtr("page", page);
+        page_one.main_window.set_header(page_one.str_header, page_one.str_subheader);
+        page_one.main_window.enable_back_button(false);
+        page_one.main_window.enable_next_button(true);
+        _ = w32.ui.windows_and_messaging.ShowWindow(page_one.hwnd, .{ .SHOWNORMAL = TRUE });
+    }
+
+    fn UpdateDPI(page: *Page) void {
+        const page_one: *PageOne = @fieldParentPtr("page", page);
+        _ = page_one;
+    }
+
+    fn OnCreate(page_one: *PageOne) !void {
+        page_one.* = .{
+            .page = page_one.page,
+            .hwnd = page_one.hwnd,
+            .main_window = page_one.main_window,
+            .str_header = Resource.stringLoad(page_one.main_window.allocator, page_one.main_window.h_instance, RES.IDS_FIRSTPAGE_HEADER) orelse return error.StringLoadError,
+            .str_subheader = Resource.stringLoad(page_one.main_window.allocator, page_one.main_window.h_instance, RES.IDS_FIRSTPAGE_SUBHEADER) orelse return error.StringLoadError,
+            .str_text = Resource.stringLoad(page_one.main_window.allocator, page_one.main_window.h_instance, RES.IDS_FIRSTPAGE_TEXT) orelse return error.StringLoadError,
+        };
+    }
+
+    fn OnDestroy(page_one: *PageOne) !void {
+        page_one.main_window.allocator.free(page_one.str_header);
+        page_one.main_window.allocator.free(page_one.str_subheader);
+        page_one.main_window.allocator.free(page_one.str_text);
+        page_one.main_window.allocator.destroy(page_one);
+    }
+
+    fn OnPaint(page_one: *PageOne) !void {
+        // Get window rect
+        var rect_window: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(page_one.hwnd, &rect_window));
+
+        // Begin double-buffered paint
+        var paint = std.mem.zeroes(w32.graphics.gdi.PAINTSTRUCT);
+        const dc = w32.graphics.gdi.BeginPaint(page_one.hwnd, &paint);
+        defer _ = w32.graphics.gdi.EndPaint(page_one.hwnd, &paint);
+
+        const dc_mem = w32.graphics.gdi.CreateCompatibleDC(dc);
+        defer _ = w32.graphics.gdi.DeleteDC(dc_mem);
+
+        const bitmap_mem = w32.graphics.gdi.CreateCompatibleBitmap(dc, rect_window.right, rect_window.bottom);
+        defer _ = w32.graphics.gdi.DeleteObject(bitmap_mem);
+
+        _ = w32.graphics.gdi.SelectObject(dc_mem, bitmap_mem);
+
+        // Fill the window with the background color.
+        _ = w32.graphics.gdi.FillRect(dc_mem, &rect_window, w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE)));
+
+        // Draw the intro text.
+        _ = w32.graphics.gdi.SelectObject(dc_mem, page_one.main_window.font_gui);
+        _ = w32.graphics.gdi.SetBkColor(dc_mem, w32.ui.windows_and_messaging.GetSysColor(w32.ui.windows_and_messaging.COLOR_BTNFACE));
+        _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(page_one.str_text.ptr), @intCast(page_one.str_text.len), &rect_window, .{ .WORDBREAK = TRUE });
+
+        _ = w32.graphics.gdi.BitBlt(dc, 0, 0, rect_window.right, rect_window.bottom, dc_mem, 0, 0, w32.graphics.gdi.SRCCOPY);
+    }
+
+    fn OnSize(page_one: *PageOne) !void {
+        _ = w32.graphics.gdi.InvalidateRect(page_one.hwnd, null, FALSE);
+    }
+};
+
 // Helper functions
-
-fn SUCCEEDED(result: w32.foundation.HRESULT) bool {
-    return result >= 0;
-}
-
 const Win32Error = error{
     NotImplemented,
     NoSuchInterface,
@@ -640,7 +831,7 @@ fn GetWndProcForType(comptime T: type) w32.ui.windows_and_messaging.WNDPROC {
                 }
             }
 
-            std.log.info("Uncaught message {}", .{msg});
+            if (false) std.log.info("Uncaught message {}", .{msg});
 
             return WAM.DefWindowProcW(handle, msg, wparam, lparam);
         }
@@ -669,7 +860,7 @@ fn GetWindowDPI(hwnd: w32.foundation.HWND) i32 {
         const monitor = w32.graphics.gdi.MonitorFromWindow(hwnd, w32.graphics.gdi.MONITOR_DEFAULTTOPRIMARY) orelse break :shcore;
         var ui_dpi_x: u32, var ui_dpi_y: u32 = .{ 0, 0 };
         const result = GetDpiForMonitor(monitor, 0, &ui_dpi_x, &ui_dpi_y);
-        if (!SUCCEEDED(result)) break :shcore;
+        if (!w32.zig.SUCCEEDED(result)) break :shcore;
         std.log.info("got dpi for monitor: {}, {}, {}", .{ result, ui_dpi_x, ui_dpi_y });
         return @intCast(ui_dpi_x);
     }
@@ -727,7 +918,7 @@ fn loadPNGAsGdiplusBitmap(
 }
 
 const Resource = struct {
-    fn stringLoad(alloc: std.mem.Allocator, h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[*:0]const u16 {
+    fn stringLoad(alloc: std.mem.Allocator, h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[:0]const u16 {
         var pointer: ?[*:0]u16 = null;
         const res = w32.ui.windows_and_messaging.LoadStringW(h_instance, u_id, @ptrCast(&pointer), 0);
         if (res == 0) return null;
@@ -824,4 +1015,5 @@ const gdip = struct {
     extern "gdiplus" fn GdipGetImageHeight(image: *anyopaque, height: *u32) callconv(.C) GpStatus;
     extern "gdiplus" fn GdipCreateFromHDC(hdc: w32.graphics.gdi.HDC, graphics: *?*GpGraphics) callconv(.C) GpStatus;
     extern "gdiplus" fn GdipDrawImageRectI(graphics: *GpGraphics, image: *GpImage, x: c_int, y: c_int, width: c_int, height: c_int) callconv(.C) GpStatus;
+    extern "gdiplus" fn GdipDisposeImage(image: *anyopaque) callconv(.C) GpStatus;
 };
