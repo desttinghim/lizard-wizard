@@ -208,14 +208,15 @@ const App = struct {
     const LPARAM = w32.foundation.LPARAM;
 
     fn OnCommand(app: *App, wparam: WPARAM) !void {
-        _ = app;
         std.log.info("WM_COMMAND", .{});
         const value: c_uint = @truncate(wparam);
         const id: CommandID = @enumFromInt(value);
         switch (id) {
             .back => {},
             .next => {},
-            .cancel => {},
+            .cancel => {
+                _ = w32.ui.windows_and_messaging.DestroyWindow(app.hwnd);
+            },
             _ => {},
         }
     }
