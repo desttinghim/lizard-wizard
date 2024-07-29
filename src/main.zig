@@ -96,10 +96,16 @@ const App = struct {
     btn_next: w32.foundation.HWND,
     btn_cancel: w32.foundation.HWND,
 
-    // font_attr_gui: w32.graphics.gdi.LOGFONTW,
-    // font_attr_gui_bold: w32.graphics.gdi.LOGFONTW,
-    // font_gui: *w32.graphics.direct_write.IDWriteFont,
-    // font_gui_bold: *w32.graphics.direct_write.IDWriteFont,
+    font_attr_gui: w32.graphics.gdi.LOGFONTW,
+    font_attr_gui_bold: w32.graphics.gdi.LOGFONTW,
+    font_gui: w32.graphics.gdi.HFONT,
+    font_gui_bold: w32.graphics.gdi.HFONT,
+
+    str_header: []const u16,
+    str_subheader: []const u16,
+    str_back: [*:0]const u16,
+    str_next: [*:0]const u16,
+    str_cancel: [*:0]const u16,
 
     const class_name = w32.zig.L("GameDisk");
     const window_title = w32.zig.L("Hello from zig"); // Title
@@ -169,6 +175,17 @@ const App = struct {
         std.log.info("created window handle {}", .{hwnd});
 
         return self;
+    }
+
+    fn set_header(app: *App, text_header: [*:0]u16, text_subheader: [*:0]u16) void {
+        app.str_header = text_header;
+        app.str_subheader = text_subheader;
+
+        // Redraw the header.
+        var rect_header = std.mem.zeroes(w32.foundation.RECT);
+        CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &rect_header)) catch return;
+        rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
+        _ = w32.graphics.gdi.InvalidateRect(app.hwnd, &rect_header, FALSE);
     }
 
     fn destroy(app: *App, allocator: std.mem.Allocator) void {
@@ -350,6 +367,11 @@ const App = struct {
 
         const gdi_font_gui = w32.graphics.gdi.CreateFontIndirectW(&font_attr_gui) orelse return error.InitGDIFont;
 
+        var font_attr_gui_bold = font_attr_gui;
+        font_attr_gui_bold.lfWeight = w32.graphics.gdi.FW_BOLD;
+
+        const gdi_font_gui_bold = w32.graphics.gdi.CreateFontIndirectW(&font_attr_gui_bold) orelse return error.InitGDIFontBold;
+
         // Get the system font's family and save it as a string
         const family = family: {
             var family: ?*w32.graphics.direct_write.IDWriteFontFamily = null;
@@ -419,17 +441,17 @@ const App = struct {
         };
 
         // Create the bottom buttons
-        const str_back = Resource.stringLoad(h_instance, RES.IDS_BACK);
+        const str_back = Resource.stringLoad(allocator, h_instance, RES.IDS_BACK) orelse return error.LoadString;
         const hwnd_back = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_back, .{ .CHILD = 1, .VISIBLE = 1, .DISABLED = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_BACK), null, null) orelse
             return error.CreateBack;
         _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_back, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
 
-        const str_next = Resource.stringLoad(h_instance, RES.IDS_NEXT);
+        const str_next = Resource.stringLoad(allocator, h_instance, RES.IDS_NEXT) orelse return error.LoadString;
         const hwnd_next = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_next, .{ .CHILD = 1, .VISIBLE = 1, .DISABLED = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_NEXT), null, null) orelse
             return error.CreateNext;
         _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_next, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
 
-        const str_cancel = Resource.stringLoad(h_instance, RES.IDS_CANCEL);
+        const str_cancel = Resource.stringLoad(allocator, h_instance, RES.IDS_CANCEL) orelse return error.LoadString;
         const hwnd_cancel = w32.ui.windows_and_messaging.CreateWindowExW(.{}, @ptrCast(WC_BUTTON), str_cancel, .{ .CHILD = 1, .VISIBLE = 1 }, 0, 0, 0, 0, hwnd, @ptrFromInt(IDC_CANCEL), null, null) orelse
             return error.CreateBack;
         _ = w32.ui.windows_and_messaging.SendMessageW(hwnd_cancel, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(gdi_font_gui), @intCast(TRUE));
@@ -452,10 +474,21 @@ const App = struct {
             .text_format_gui = text_format.?,
             .text_format_gui_bold = text_format_bold.?,
 
+            .font_attr_gui = font_attr_gui,
+            .font_attr_gui_bold = font_attr_gui_bold,
+            .font_gui = gdi_font_gui,
+            .font_gui_bold = gdi_font_gui_bold,
+
             .hwnd_line = hwnd_line,
             .btn_back = hwnd_back,
             .btn_next = hwnd_next,
             .btn_cancel = hwnd_cancel,
+
+            .str_header = w32.zig.L("Header"),
+            .str_subheader = w32.zig.L("Subheader"),
+            .str_back = str_back,
+            .str_next = str_next,
+            .str_cancel = str_cancel,
         };
 
         // Create all pages
@@ -497,6 +530,9 @@ const App = struct {
         std.log.info("WM_DESTROY", .{});
         w32.ui.windows_and_messaging.PostQuitMessage(0);
         app.allocator.free(app.font_family_name);
+        app.allocator.free(std.mem.span(app.str_next));
+        app.allocator.free(std.mem.span(app.str_back));
+        app.allocator.free(std.mem.span(app.str_cancel));
     }
 
     fn OnDpiChanged(app: *App, wparam: WPARAM, lparam: LPARAM) !void {
@@ -529,55 +565,113 @@ const App = struct {
     }
 
     fn OnPaint(app: *App) !void {
-        const hello_world = w32.zig.L("Hello, World!");
+        // Get window rect
+        var rect_window: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &rect_window));
 
-        const render_target = app.d2d_render_target;
+        const h_theme = w32.ui.controls.OpenThemeData(app.hwnd, w32.zig.L("Window"));
+        defer _ = w32.ui.controls.CloseThemeData(h_theme);
 
-        render_target.ID2D1RenderTarget.BeginDraw();
-        defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
+        const white_brush: w32.graphics.gdi.HBRUSH = @ptrCast(w32.graphics.gdi.GetStockObject(w32.graphics.gdi.WHITE_BRUSH));
+        // const color_btnface: w32.graphics.gdi.HBRUSH = @ptrFromInt(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE) + 1);
+        const color_btnface = w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE));
+        std.log.info("color btnface {?}", .{color_btnface});
 
-        _ = render_target.ID2D1RenderTarget.SetTransform(&identity);
-        _ = render_target.ID2D1RenderTarget.Clear(&white);
+        {
+            // Begin double-buffered paint
+            var paint = std.mem.zeroes(w32.graphics.gdi.PAINTSTRUCT);
+            const dc = w32.graphics.gdi.BeginPaint(app.hwnd, &paint);
+            defer _ = w32.graphics.gdi.EndPaint(app.hwnd, &paint);
 
-        // const size = render_target.ID2D1RenderTarget.GetSize();
-        const window = direct2d.common.D2D_RECT_F{
-            .left = 0,
-            .top = 0,
-            .right = Conf.window_min_width,
-            .bottom = Conf.window_min_height,
-        };
+            const dc_mem = w32.graphics.gdi.CreateCompatibleDC(dc);
+            defer _ = w32.graphics.gdi.DeleteDC(dc_mem);
 
-        var brush_solid_white_opt: ?*direct2d.ID2D1SolidColorBrush = null;
-        _ = render_target.ID2D1RenderTarget.CreateSolidColorBrush(&white, null, &brush_solid_white_opt);
-        const brush_solid_white = brush_solid_white_opt.?;
-        defer _ = brush_solid_white.IUnknown.Release();
+            const bitmap_mem = w32.graphics.gdi.CreateCompatibleBitmap(dc, rect_window.right, rect_window.bottom);
+            defer _ = w32.graphics.gdi.DeleteObject(bitmap_mem);
 
-        _ = render_target.ID2D1RenderTarget.FillRectangle(&window, @ptrCast(brush_solid_white));
+            _ = w32.graphics.gdi.SelectObject(dc_mem, bitmap_mem);
 
-        _ = render_target.ID2D1RenderTarget.DrawRectangle(
-            &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
-            @ptrCast(app.d2d_brush_black),
-            1.0,
-            null,
-        );
+            // Draw a white rectangle completely filling the header of the window.
+            var rect_header = rect_window;
+            rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
+            _ = w32.graphics.gdi.FillRect(dc_mem, &rect_header, white_brush);
 
-        _ = render_target.ID2D1RenderTarget.DrawBitmap(
-            app.d2d_bitmap_logo,
-            &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
-            1,
-            .LINEAR,
-            null,
-        );
+            // Draw the header text
+            var rect_header_text = rect_header;
+            rect_header_text.left = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
+            rect_header_text.top = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
+            _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui_bold);
+            const text_res = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_header.ptr), @intCast(app.str_header.len), &rect_header_text, .{});
+            std.log.info("draw text res {} rect {}", .{ text_res, rect_header_text });
 
-        _ = render_target.ID2D1RenderTarget.DrawText(
-            hello_world,
-            hello_world.len,
-            app.text_format_gui,
-            &direct2d.common.D2D_RECT_F{ .left = 10, .top = 10, .right = 200, .bottom = 200 },
-            @ptrCast(app.d2d_brush_black),
-            direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
-            w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
-        );
+            // Draw the subheader text
+            var rect_subheader_text = rect_header;
+            rect_subheader_text.left = mulDiv(20, app.window_current_dpi, Conf.reference_dpi);
+            rect_subheader_text.top = mulDiv(32, app.window_current_dpi, Conf.reference_dpi);
+            _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui);
+            _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_subheader.ptr), @intCast(app.str_subheader.len), &rect_subheader_text, .{});
+
+            // TODO: Draw logo into upper right corner
+
+            // Fill the rest of the window with the window background color.
+            var rect_background = rect_window;
+            rect_background.top = rect_header.bottom;
+            _ = w32.ui.controls.DrawThemeBackground(h_theme, dc_mem, @intFromEnum(w32.ui.controls.WP_DIALOG), 0, &rect_background, null);
+            // const res = w32.graphics.gdi.FillRect(dc_mem, &rect_header, color_btnface);
+            // std.log.info("fill rect res {}", .{res});
+
+            _ = w32.graphics.gdi.BitBlt(dc, 0, 0, rect_window.right, rect_window.bottom, dc_mem, 0, 0, w32.graphics.gdi.SRCCOPY);
+        }
+
+        // const hello_world = w32.zig.L("Hello, World!");
+
+        // const render_target = app.d2d_render_target;
+
+        // render_target.ID2D1RenderTarget.BeginDraw();
+        // defer _ = render_target.ID2D1RenderTarget.EndDraw(null, null);
+
+        // _ = render_target.ID2D1RenderTarget.SetTransform(&identity);
+        // _ = render_target.ID2D1RenderTarget.Clear(&white);
+
+        // // const size = render_target.ID2D1RenderTarget.GetSize();
+        // const window = direct2d.common.D2D_RECT_F{
+        //     .left = 0,
+        //     .top = 0,
+        //     .right = Conf.window_min_width,
+        //     .bottom = Conf.window_min_height,
+        // };
+
+        // var brush_solid_white_opt: ?*direct2d.ID2D1SolidColorBrush = null;
+        // _ = render_target.ID2D1RenderTarget.CreateSolidColorBrush(&white, null, &brush_solid_white_opt);
+        // const brush_solid_white = brush_solid_white_opt.?;
+        // defer _ = brush_solid_white.IUnknown.Release();
+
+        // _ = render_target.ID2D1RenderTarget.FillRectangle(&window, @ptrCast(brush_solid_white));
+
+        // _ = render_target.ID2D1RenderTarget.DrawRectangle(
+        //     &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
+        //     @ptrCast(app.d2d_brush_black),
+        //     1.0,
+        //     null,
+        // );
+
+        // _ = render_target.ID2D1RenderTarget.DrawBitmap(
+        //     app.d2d_bitmap_logo,
+        //     &.{ .left = 10, .right = 100, .top = 10, .bottom = 100 },
+        //     1,
+        //     .LINEAR,
+        //     null,
+        // );
+
+        // _ = render_target.ID2D1RenderTarget.DrawText(
+        //     hello_world,
+        //     hello_world.len,
+        //     app.text_format_gui,
+        //     &direct2d.common.D2D_RECT_F{ .left = 10, .top = 10, .right = 200, .bottom = 200 },
+        //     @ptrCast(app.d2d_brush_black),
+        //     direct2d.D2D1_DRAW_TEXT_OPTIONS_NONE,
+        //     w32.graphics.direct_write.DWRITE_MEASURING_MODE_NATURAL,
+        // );
     }
 
     fn OnSize(app: *App) !void {
@@ -587,9 +681,14 @@ const App = struct {
         var window_rect: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
         try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &window_rect));
 
-        // TODO: Redraw header on every size change
+        // Redraw header on every size change
+        var rect_header = window_rect;
+        rect_header.bottom = mulDiv(Conf.header_height, app.window_current_dpi, Conf.reference_dpi);
+        _ = w32.graphics.gdi.InvalidateRect(app.hwnd, &rect_header, FALSE);
 
-        { // Move the buttons
+        // Update subwindow positions
+        {
+            // Move the buttons
             var hdwp = w32.ui.windows_and_messaging.BeginDeferWindowPos(5);
             if (hdwp == 0) return error.BeginDeferringWindowPos;
             defer _ = w32.ui.windows_and_messaging.EndDeferWindowPos(hdwp);
@@ -917,12 +1016,14 @@ fn loadPNGAsD2DBitmap(
 }
 
 const Resource = struct {
-    fn stringLoad(h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[*:0]const u16 {
+    fn stringLoad(alloc: std.mem.Allocator, h_instance: w32.foundation.HINSTANCE, u_id: u32) ?[*:0]const u16 {
         var pointer: ?[*:0]u16 = null;
-        const char_count = w32.ui.windows_and_messaging.LoadStringW(h_instance, u_id, @ptrCast(&pointer), 0);
-        if (char_count == 0) return null;
+        const res = w32.ui.windows_and_messaging.LoadStringW(h_instance, u_id, @ptrCast(&pointer), 0);
+        if (res == 0) return null;
+        const char_count: usize = @intCast(res);
         const p = pointer orelse return null;
-        return p;
+        const string = alloc.dupeZ(u16, p[0..char_count]) catch return null;
+        return string;
     }
 };
 
