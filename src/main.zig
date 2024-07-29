@@ -220,8 +220,7 @@ const App = struct {
 
     fn OnCreate(app: *App) !void {
         std.log.info("WM_CREATE", .{});
-        // Fields other than hwnd are currently undefined, do not use them
-        std.log.info("oncreate window handle {}", .{app.hwnd});
+        // Fields other than hwnd and allocator are currently undefined, do not use them
         const hwnd = app.hwnd;
         const allocator = app.allocator;
         const h_instance = w32.system.library_loader.GetModuleHandleW(null) orelse return error.RetrievingHInstance;
@@ -229,9 +228,8 @@ const App = struct {
         // Get the DPI for the monitor where the window is shown
         const dpi = GetWindowDPI(hwnd);
 
-        // // Load resources
+        // Load resources
         const bitmap_logo = try loadPNGAsGdiplusBitmap(allocator, h_instance, RES.IDP_LOGO);
-        std.log.info("bitmap_logo {}", .{bitmap_logo});
 
         // Query what the default system font is
         var ncm = std.mem.zeroes(w32.ui.windows_and_messaging.NONCLIENTMETRICSW);
@@ -348,23 +346,6 @@ const App = struct {
         _ = w32.ui.windows_and_messaging.ShowWindow(hwnd, .{ .SHOWNORMAL = TRUE });
     }
 
-    fn _FontEnumProc(
-        log_font_opt: ?*const w32.graphics.gdi.LOGFONTW,
-        text_metric: ?*const w32.graphics.gdi.TEXTMETRICW,
-        font_type: u32,
-        lparam: w32.foundation.LPARAM,
-    ) callconv(std.os.windows.WINAPI) c_int {
-        const log_font = log_font_opt orelse {
-            std.log.info("NULL log font", .{});
-            return 1;
-        };
-        _ = text_metric;
-        _ = font_type;
-        _ = lparam;
-        std.log.info("Font {}", .{std.unicode.fmtUtf16Le(std.mem.sliceTo(&log_font.lfFaceName, 0))});
-        return 1;
-    }
-
     fn OnDestroy(app: *App) !void {
         std.log.info("WM_DESTROY", .{});
         w32.ui.windows_and_messaging.PostQuitMessage(0);
@@ -374,21 +355,35 @@ const App = struct {
     }
 
     fn OnDpiChanged(app: *App, wparam: WPARAM, lparam: LPARAM) !void {
-        _ = wparam;
         std.log.info("WM_DPICHANGED", .{});
 
-        app.window_current_dpi = GetWindowDPI(app.hwnd);
+        // New DPI is stores in the lower bits of wparam
+        app.window_current_dpi = @truncate(@as(isize, @intCast(wparam)));
 
-        var window_rect = std.mem.zeroes(w32.foundation.RECT);
-        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(app.hwnd, &window_rect));
-        try CHECK_BOOL(w32.graphics.gdi.InvalidateRect(app.hwnd, &window_rect, FALSE));
+        // Redraw the entire window on every DPI change
+        try CHECK_BOOL(w32.graphics.gdi.InvalidateRect(app.hwnd, null, FALSE));
 
+        // Recalculate the main GUI font
+        app.font_attr_gui.lfHeight = -mulDiv(10, app.window_current_dpi, Conf.reference_dpi);
+        app.font_gui = w32.graphics.gdi.CreateFontIndirectW(&app.font_attr_gui) orelse return error.CreateFont;
+
+        // Recalculate the bold GUI font
+        app.font_attr_gui_bold.lfHeight = app.font_attr_gui.lfHeight;
+        app.font_gui_bold = w32.graphics.gdi.CreateFontIndirectW(&app.font_attr_gui_bold) orelse return error.CreateFont;
+
+        // Update the control fonts
+        _ = (w32.ui.windows_and_messaging.SendMessageW(app.btn_back, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(app.font_gui), @intCast(TRUE)));
+        _ = (w32.ui.windows_and_messaging.SendMessageW(app.btn_next, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(app.font_gui), @intCast(TRUE)));
+        _ = (w32.ui.windows_and_messaging.SendMessageW(app.btn_cancel, w32.ui.windows_and_messaging.WM_SETFONT, @intFromPtr(app.font_gui), @intCast(TRUE)));
+
+        // TODO: Update DPI for child windows
+
+        // Use the suggested new window size
         const window_rect_new: *const w32.foundation.RECT = @ptrFromInt(@as(usize, @intCast(lparam)));
         const x = window_rect_new.left;
         const y = window_rect_new.top;
         const width = window_rect_new.right - x;
         const height = window_rect_new.bottom - y;
-
         try CHECK_BOOL(w32.ui.windows_and_messaging.SetWindowPos(app.hwnd, null, x, y, width, height, .{ .NOZORDER = 1, .NOACTIVATE = 1 }));
     }
 
