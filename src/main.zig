@@ -97,7 +97,7 @@ const App = struct {
 
     page_current: *Page,
     page_one: *PageOne,
-    // page_two: *PageTwo,
+    page_two: *PageTwo,
 
     const class_name = w32.zig.L("GameDisk");
     const window_title = w32.zig.L("Hello from zig"); // Title
@@ -192,7 +192,7 @@ const App = struct {
     fn SwitchPage(app: *App, new_page: *Page) void {
         app.page_current = new_page;
         _ = w32.ui.windows_and_messaging.ShowWindow(app.page_one.page.GetHWND(&app.page_one.page), .{});
-        // _ = w32.ui.windows_and_messaging.ShowWindow(app.page_second, .{});
+        _ = w32.ui.windows_and_messaging.ShowWindow(app.page_two.page.GetHWND(&app.page_two.page), .{});
         new_page.SwitchTo(new_page);
     }
 
@@ -230,8 +230,16 @@ const App = struct {
         const value: c_uint = @truncate(wparam);
         const id: CommandID = @enumFromInt(value);
         switch (id) {
-            .back => {},
-            .next => {},
+            .back => {
+                if (app.page_current == &app.page_two.page) {
+                    app.SwitchPage(&app.page_one.page);
+                }
+            },
+            .next => {
+                if (app.page_current == &app.page_one.page) {
+                    app.SwitchPage(&app.page_two.page);
+                }
+            },
             .cancel => {
                 _ = w32.ui.windows_and_messaging.DestroyWindow(app.hwnd);
             },
@@ -368,6 +376,7 @@ const App = struct {
             .bmp_logo = bitmap_logo,
 
             .page_one = try PageOne.create(app),
+            .page_two = try PageTwo.create(app),
             .page_current = &app.page_one.page,
         };
 
@@ -416,7 +425,7 @@ const App = struct {
 
         // Update DPI for child windows
         app.page_one.page.UpdateDPI(&app.page_one.page);
-        // app.page_two.page.UpdateDPI(&app.page_two.page);
+        app.page_two.page.UpdateDPI(&app.page_two.page);
 
         // Use the suggested new window size
         const window_rect_new: *const w32.foundation.RECT = @ptrFromInt(@as(usize, @intCast(lparam)));
@@ -466,8 +475,7 @@ const App = struct {
         rect_header_text.left = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
         rect_header_text.top = mulDiv(15, app.window_current_dpi, Conf.reference_dpi);
         _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui_bold);
-        const text_res = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_header.ptr), @intCast(app.str_header.len), &rect_header_text, .{});
-        std.log.info("draw text res {} rect {}", .{ text_res, rect_header_text });
+        _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_header.ptr), @intCast(app.str_header.len), &rect_header_text, .{});
 
         // Draw the subheader text
         var rect_subheader_text = rect_header;
@@ -476,7 +484,7 @@ const App = struct {
         _ = w32.graphics.gdi.SelectObject(dc_mem, app.font_gui);
         _ = w32.graphics.gdi.DrawTextW(dc_mem, @ptrCast(app.str_subheader.ptr), @intCast(app.str_subheader.len), &rect_subheader_text, .{});
 
-        // TODO: Draw logo into upper right corner
+        // Draw logo in upper right corner
         const logo_padding = mulDiv(5, app.window_current_dpi, Conf.reference_dpi);
         const dest_bitmap_height = rect_header.bottom - 2 * logo_padding;
         const dest_bitmap_width = @divFloor(@as(i32, @intCast(app.bmp_logo.GetWidth())) * dest_bitmap_height, @as(i32, @intCast(app.bmp_logo.GetHeight())));
@@ -547,6 +555,7 @@ const App = struct {
             const page_width = rect_window.right - page_x - control_padding;
 
             hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.page_one.hwnd, null, page_x, page_y, page_width, page_height, .{});
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, app.page_two.hwnd, null, page_x, page_y, page_width, page_height, .{});
             if (hdwp == 0) return error.DeferWindowPos;
         }
     }
@@ -704,6 +713,194 @@ const PageOne = struct {
 
     fn OnSize(page_one: *PageOne) !void {
         _ = w32.graphics.gdi.InvalidateRect(page_one.hwnd, null, FALSE);
+    }
+};
+
+const PageTwo = struct {
+    page: Page,
+    hwnd: w32.foundation.HWND,
+    main_window: *App,
+    str_header: [:0]const u16,
+    str_subheader: [:0]const u16,
+    hwnd_list: w32.foundation.HWND,
+
+    const class_name = w32.zig.L("PageTwoWndClass");
+
+    fn create(main_window: *App) !*PageTwo {
+        const WAM = w32.ui.windows_and_messaging;
+
+        const window_class = w32.ui.windows_and_messaging.WNDCLASSW{
+            .style = w32.ui.windows_and_messaging.WNDCLASS_STYLES{
+                .HREDRAW = 1,
+                .VREDRAW = 1,
+            },
+            .lpfnWndProc = GetWndProcForType(PageTwo),
+            .hInstance = main_window.h_instance,
+            .hCursor = WAM.LoadCursorW(null, WAM.IDI_APPLICATION),
+            .hIcon = null,
+            .hbrBackground = w32.graphics.gdi.GetSysColorBrush(@intFromEnum(w32.ui.windows_and_messaging.COLOR_BTNFACE)),
+            .lpszClassName = class_name,
+            .lpszMenuName = null,
+            .cbClsExtra = 0,
+            .cbWndExtra = 0,
+        };
+        const class_atom = atom: {
+            const res = WAM.RegisterClassW(&window_class);
+            if (res <= 0) return error.FailedToRegisterClass;
+            break :atom res;
+        };
+
+        const self = try main_window.allocator.create(PageTwo);
+        errdefer main_window.allocator.destroy(self);
+
+        self.page = Page.FromStruct(PageTwo);
+        self.main_window = main_window;
+
+        // Create window
+        const hwnd = w32.ui.windows_and_messaging.CreateWindowExW(
+            .{},
+            @ptrFromInt(class_atom),
+            w32.zig.L(""),
+            w32.ui.windows_and_messaging.WINDOW_STYLE{
+                .CHILD = TRUE,
+                .CLIPCHILDREN = TRUE,
+                .CLIPSIBLINGS = TRUE,
+            },
+            0,
+            0,
+            0,
+            0,
+            main_window.hwnd,
+            null,
+            main_window.h_instance,
+            self,
+        ) orelse {
+            const err = w32.foundation.GetLastError();
+            std.log.err("{s}", .{@tagName(err)});
+
+            // TODO: Handle specific errors with GetLastError()
+            return error.CouldNotCreateWindow;
+        };
+
+        std.log.info("created window handle {}", .{hwnd});
+
+        return self;
+    }
+
+    fn GetHWND(page: *Page) w32.foundation.HWND {
+        const page_two: *PageTwo = @fieldParentPtr("page", page);
+        return page_two.hwnd;
+    }
+
+    fn SwitchTo(page: *Page) void {
+        const page_two: *PageTwo = @fieldParentPtr("page", page);
+        page_two.main_window.set_header(page_two.str_header, page_two.str_subheader);
+        page_two.main_window.enable_back_button(true);
+        page_two.main_window.enable_next_button(false);
+        _ = w32.ui.windows_and_messaging.ShowWindow(page_two.hwnd, .{ .SHOWNORMAL = TRUE });
+    }
+
+    fn UpdateDPI(page: *Page) void {
+        const page_two: *PageTwo = @fieldParentPtr("page", page);
+        _ = page_two;
+    }
+
+    fn OnCreate(page_two: *PageTwo) !void {
+        const list_view = w32.ui.windows_and_messaging.CreateWindowExW(
+            .{ .CLIENTEDGE = 1 },
+            w32.zig.L("SysListView32"),
+            w32.zig.L(""),
+            .{
+                .CHILD = 1,
+                .VISIBLE = 1,
+                .ACTIVECAPTION = 1, // LVS_REPORT
+                ._2 = 1, // LVS_SINGLESEL
+            },
+            0,
+            0,
+            0,
+            0,
+            page_two.hwnd,
+            null,
+            null,
+            null,
+        ) orelse return error.CreateListView;
+
+        _ = w32.ui.windows_and_messaging.SendMessageW(
+            list_view,
+            w32.ui.controls.LVM_SETEXTENDEDLISTVIEWSTYLE,
+            w32.ui.controls.LVS_EX_DOUBLEBUFFER | w32.ui.controls.LVS_EX_FULLROWSELECT,
+            w32.ui.controls.LVS_EX_DOUBLEBUFFER | w32.ui.controls.LVS_EX_FULLROWSELECT,
+        );
+
+        var column = std.mem.zeroes(w32.ui.controls.LVCOLUMNW);
+        column.mask = .{ .TEXT = 1 };
+
+        const wstr_column = Resource.stringLoad(page_two.main_window.allocator, page_two.main_window.h_instance, RES.IDS_COLUMN1) orelse return error.StringLoadError;
+        column.pszText = @constCast(wstr_column.ptr);
+        _ = w32.ui.windows_and_messaging.SendMessageW(
+            list_view,
+            w32.ui.controls.LVM_INSERTCOLUMNW,
+            0,
+            @intCast(@intFromPtr(&column)),
+        );
+
+        const wstr_column2 = Resource.stringLoad(page_two.main_window.allocator, page_two.main_window.h_instance, RES.IDS_COLUMN2) orelse return error.StringLoadError;
+        column.pszText = @constCast(wstr_column2.ptr);
+        _ = w32.ui.windows_and_messaging.SendMessageW(
+            list_view,
+            w32.ui.controls.LVM_INSERTCOLUMNW,
+            1,
+            @intCast(@intFromPtr(&column)),
+        );
+
+        page_two.* = .{
+            .page = page_two.page,
+            .hwnd = page_two.hwnd,
+            .main_window = page_two.main_window,
+            .str_header = Resource.stringLoad(page_two.main_window.allocator, page_two.main_window.h_instance, RES.IDS_SECONDPAGE_HEADER) orelse return error.StringLoadError,
+            .str_subheader = Resource.stringLoad(page_two.main_window.allocator, page_two.main_window.h_instance, RES.IDS_SECONDPAGE_SUBHEADER) orelse return error.StringLoadError,
+            .hwnd_list = list_view,
+        };
+    }
+
+    fn OnDestroy(page_two: *PageTwo) !void {
+        page_two.main_window.allocator.free(page_two.str_header);
+        page_two.main_window.allocator.free(page_two.str_subheader);
+        page_two.main_window.allocator.destroy(page_two);
+    }
+
+    fn OnSize(page_two: *PageTwo) !void {
+        var rect_window: w32.foundation.RECT = .{ .left = 0, .top = 0, .right = 0, .bottom = 0 };
+        try CHECK_BOOL(w32.ui.windows_and_messaging.GetClientRect(page_two.hwnd, &rect_window));
+
+        {
+            var hdwp = w32.ui.windows_and_messaging.BeginDeferWindowPos(1);
+            if (hdwp == 0) return error.BeginDeferringWindowPos;
+            defer _ = w32.ui.windows_and_messaging.EndDeferWindowPos(hdwp);
+
+            const list_x = 0;
+            const list_y = 0;
+            const list_width = rect_window.right;
+            const list_height = rect_window.bottom;
+
+            hdwp = w32.ui.windows_and_messaging.DeferWindowPos(hdwp, page_two.hwnd_list, null, list_x, list_y, list_width, list_height, .{});
+        }
+
+        // Adjust the list column widths
+        const column_width = @divTrunc(rect_window.right, 3);
+        _ = w32.ui.windows_and_messaging.SendMessageW(
+            page_two.hwnd_list,
+            w32.ui.controls.LVM_SETCOLUMNWIDTH,
+            0,
+            column_width,
+        );
+        _ = w32.ui.windows_and_messaging.SendMessageW(
+            page_two.hwnd_list,
+            w32.ui.controls.LVM_SETCOLUMNWIDTH,
+            1,
+            column_width,
+        );
     }
 };
 
