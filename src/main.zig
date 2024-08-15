@@ -1,6 +1,13 @@
-/// A customizable Win32 install wizard to be used on disks as an autorun application.
+/// # Lizard Wizard App Template
+///
+/// The Lizard Wizard App Template is a customizable Win32 install wizard meant to be used on
+/// disks as an autorun application.
+///
 /// Inspired by and loosely based on the "Writing a Wizard like it's 2020" series of articles,
 /// available at https://building.enlyze.com/posts/writing-win32-apps-like-its-2020-part-1/
+///
+/// ## Configuration
+///
 
 // Copyright (c) 2024 Louis Pearson
 //
